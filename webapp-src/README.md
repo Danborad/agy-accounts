@@ -17,11 +17,14 @@ vendored so that `agy-accounts` can serve the same UI from its Python backend.
   app bundle.
 - `public/tauri-shim.js`: new HTTP bridge (part of agy-accounts) that maps the
   subset of Tauri commands used by the UI onto the agy-accounts HTTP API.
+- `src/components/accounts/GroupQuota.tsx`: new group-level quota bars
+  (Claude/Gemini × 5h/weekly).
+- `src/components/accounts/AccountCard.tsx` and `AccountTable.tsx`: render the
+  group quota component; the original per-model view is kept hidden.
+- `src/pages/Accounts.tsx`: added the "保存当前" snapshot button.
 - Rust backend (`src-tauri/`) is **not** included; desktop-only commands are
   implemented or rejected by the bridge.
 - Built output lives in `../webapp/`.
-
-No upstream source file other than the two mentioned above was modified.
 
 ## Build
 

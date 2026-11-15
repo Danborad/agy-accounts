@@ -73,8 +73,9 @@ Antigravity 在机器上的状态分三层：
 - 账号列表：邮箱、套餐、当前标记、备注、最后使用时间、拖拽排序
 - 当前账号判定：令牌字节一致，或 `refresh_token` 相同（应对 access_token 轮换）
 - 每个已保存账号的套餐（Free / Pro / Ultra / Standard）与额度
-- 逐模型额度：Claude Opus 4.6 (Thinking)、Gemini 3.8 Flash 等真实模型行
-- 5 小时 / 每周额度条、剩余百分比、重置倒计时与重置时间
+- 分组额度：Claude 5h、Gemini 5h、Claude 周额度、Gemini 周额度
+- 列表视图 2×2 汇总条，卡片视图单列；剩余百分比与重置倒计时
+- 账号页工具栏「保存当前」按钮，直接保存当前登录快照
 - 账号状态与综合额度汇总卡片
 - 保存当前登录为命名快照（右下角工具栏，自动识别邮箱）
 - 一键切换：停止 → 替换 → 启动 → 探测，全程串行
@@ -314,7 +315,7 @@ python3 agy_accounts.py --version
 - Claude / GPT 与 Gemini 的 5 小时、每周剩余比例
 - 重置时间，以及“当前不适用”的桶
 
-额度查询按原版顺序使用 `cloudcode-pa.googleapis.com` 等生产端点：`fetchAvailableModels` 取逐模型额度，`retrieveUserQuotaSummary` 取 5 小时 / 每周分组，`loadCodeAssist` 取套餐。额度请求使用快照自己的 `access_token`；快照过期时会用 `refresh_token` 刷新并写回快照。若该账号正是当前登录，刷新后的令牌也会同步到线上令牌文件（与切换事务互斥，避免交叉写入）。结果缓存 `quota_ttl` 秒（默认 5 分钟），页面上的“刷新”会强制重查。
+额度查询按原版顺序使用 `cloudcode-pa.googleapis.com` 等生产端点：`fetchAvailableModels` 取逐模型额度，`retrieveUserQuotaSummary` 取 5 小时 / 每周分组，`loadCodeAssist` 取套餐。面板把数据归并为 Claude / Gemini × 5h / 周额度 四个汇总条；接口没有返回的分组会显示「暂无数据」，不会伪造百分比。额度请求使用快照自己的 `access_token`；快照过期时会用 `refresh_token` 刷新并写回快照。若该账号正是当前登录，刷新后的令牌也会同步到线上令牌文件（与切换事务互斥，避免交叉写入）。结果缓存 `quota_ttl` 秒（默认 5 分钟），页面上的“刷新”会强制重查。
 
 说明：
 

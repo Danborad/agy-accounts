@@ -26,5 +26,6 @@ commit db370ab5d12859f78a30c4acc4a0998a6fe8ce02):
   Licensed under CC BY-NC-SA 4.0
 
 Modifications: Vite base path changed to "/", page title changed, a new
-tauri-shim.js HTTP bridge was added, and the Rust/Tauri backend was omitted
+tauri-shim.js HTTP bridge was added, a group-level quota component and a
+"保存当前" snapshot button were added, and the Rust/Tauri backend was omitted
 and replaced by that bridge. See webapp-src/README.md for details.

@@ -628,6 +628,8 @@
     }
   }
 
+  window.__agySaveCurrent = saveCurrentLogin;
+
   async function logout() {
     try {
       await api("/api/logout", { method: "POST", body: "{}" });
@@ -669,6 +671,11 @@
     "@media (max-width:560px){#agy-tools{bottom:10px;font-size:11px}#agy-tools button,#agy-tools a{padding:5px 8px}}"
   ].join("");
   document.head.appendChild(style);
+
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener: function () {},
+    emit: function () {}
+  };
 
   window.__TAURI_INTERNALS__ = {
     invoke: function (cmd, args) { return bridge(cmd, args); },

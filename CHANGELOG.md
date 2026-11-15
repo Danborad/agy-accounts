@@ -2,6 +2,17 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.4.0] - 2026-11-16
+
+### 新增 / 调整
+
+- 账号额度改为分组视图：Claude 5h、Gemini 5h、Claude 周额度、Gemini 周额度
+- 列表视图使用 2×2 汇总条，卡片视图使用单列汇总条
+- 账号页工具栏新增「保存当前」按钮，直接保存当前 Antigravity 登录快照
+- 修复 Tauri 事件桥接的 `unregisterListener` 报错
+- Gemini 周额度在接口未返回时显示「暂无数据」，不伪造数值
+- 版本 1.4.0
+
 ## [1.3.1] - 2026-11-16
 
 ### 修复

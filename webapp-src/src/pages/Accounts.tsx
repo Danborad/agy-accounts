@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   List,
   RefreshCw,
+  Save,
   Search,
   Trash2,
 } from "lucide-react";
@@ -261,6 +262,17 @@ function Accounts() {
   const handleAddAccount = async (email: string, refreshToken: string) => {
     await addAccount(email, refreshToken);
   };
+
+  const handleSaveCurrentLogin = useCallback(async () => {
+    const saveCurrent = (window as unknown as {
+      __agySaveCurrent?: () => Promise<void>;
+    }).__agySaveCurrent;
+    if (typeof saveCurrent !== "function") {
+      showToast("当前环境不支持保存登录", "error");
+      return;
+    }
+    await saveCurrent();
+  }, []);
 
   const [switchingAccountId, setSwitchingAccountId] = useState<string | null>(
     null,
@@ -677,6 +689,15 @@ function Accounts() {
 
         {/* 操作按钮组 */}
         <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            className="px-2.5 py-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200/50 dark:border-emerald-800/50 text-xs font-medium rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors flex items-center gap-1.5 shadow-xs whitespace-nowrap shrink-0"
+            onClick={() => { void handleSaveCurrentLogin(); }}
+            title="把当前 Antigravity 登录保存为账号快照"
+          >
+            <Save className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">保存当前</span>
+          </button>
+
           <AddAccountDialog onAdd={handleAddAccount} showText={false} />
 
           <button
