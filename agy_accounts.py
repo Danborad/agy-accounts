@@ -1,0 +1,1342 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""agy-accounts · Antigravity 多账号切换面板.
+
+只替换 agy-server（language_server --standalone）使用的 OAuth token，
+不触碰 ~/.gemini 中的会话、项目与产物数据。
+
+依赖：Python 3.9+ 标准库。
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import getpass
+import hashlib
+import hmac
+import http.cookies
+import json
+import logging
+import os
+import re
+import secrets
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, Dict, List, Optional, Tuple
+
+APP_NAME = "agy-accounts"
+VERSION = "1.0.0"
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+WEB_DIR = os.path.join(BASE_DIR, "web")
+
+DEFAULTS: Dict[str, Any] = {
+    "token_path": "~/.gemini/jetski-standalone-oauth-token",
+    "accounts_dir": "~/.local/share/agy-accounts/accounts",
+    "service_name": "agy-server",
+    "stop_command": [],
+    "start_command": [],
+    "status_command": [],
+    "probe_url": "http://127.0.0.1:8765/",
+    "app_url": "http://127.0.0.1:8765/",
+    "listen_host": "127.0.0.1",
+    "listen_port": 8790,
+    "password": "",
+    "password_hash": "",
+    "session_ttl": 86400,
+    "cookie_secure": False,
+    "probe_timeout": 30,
+    "command_timeout": 30,
+    "stop_timeout": 20,
+    "login_max_failures": 5,
+    "login_window": 300,
+    "log_level": "INFO",
+}
+
+ENV_OVERRIDES = {
+    "AGY_ACCOUNTS_TOKEN": "token_path",
+    "AGY_ACCOUNTS_DIR": "accounts_dir",
+    "AGY_ACCOUNTS_SERVICE": "service_name",
+    "AGY_ACCOUNTS_PROBE_URL": "probe_url",
+    "AGY_ACCOUNTS_APP_URL": "app_url",
+    "AGY_ACCOUNTS_HOST": "listen_host",
+    "AGY_ACCOUNTS_PORT": "listen_port",
+    "AGY_ACCOUNTS_PASSWORD": "password",
+    "AGY_ACCOUNTS_LOG_LEVEL": "log_level",
+}
+
+COOKIE_NAME = "agy_accounts_session"
+CSRF_HEADER = "X-Agy-Accounts"
+MAX_BODY = 64 * 1024
+MAX_NAME = 60
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+JWT_RE = re.compile(r"^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*$")
+
+log = logging.getLogger("agy-accounts")
+
+
+# ---------------------------------------------------------------------------
+# 错误与基础工具
+# ---------------------------------------------------------------------------
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, message: str, extra: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.extra = extra or {}
+
+
+class SwitchError(Exception):
+    def __init__(self, message: str, status: int = 502, rolled_back: Optional[bool] = None,
+                 detail: Optional[str] = None):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+        self.rolled_back = rolled_back
+        self.detail = detail
+
+
+def now() -> int:
+    return int(time.time())
+
+
+def iso_time(ts: Optional[int]) -> str:
+    if not ts:
+        return ""
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(ts))
+
+
+def sha256(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
+
+
+def expand_path(value: str) -> str:
+    return os.path.abspath(os.path.expanduser(str(value)))
+
+
+def ensure_dir(path: str, mode: int = 0o700) -> str:
+    os.makedirs(path, mode=mode, exist_ok=True)
+    try:
+        os.chmod(path, mode)
+    except OSError:
+        pass
+    return path
+
+
+def read_bytes(path: str) -> Optional[bytes]:
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        log.warning("读取文件失败 %s: %s", path, exc.__class__.__name__)
+        return None
+
+
+def write_atomic(path: str, data: bytes, mode: int = 0o600) -> None:
+    """在同目录写入临时文件后 os.replace，避免出现半个文件。"""
+    directory = os.path.dirname(path) or "."
+    ensure_dir(directory, 0o700)
+    fd, tmp = tempfile.mkstemp(prefix=".agy-accounts-", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+        try:
+            dfd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def write_json_atomic(path: str, obj: Any, mode: int = 0o600) -> None:
+    payload = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8") + b"\n"
+    write_atomic(path, payload, mode)
+
+
+def read_json(path: str) -> Dict[str, Any]:
+    raw = read_bytes(path)
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        log.warning("JSON 文件解析失败：%s", path)
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+# ---------------------------------------------------------------------------
+# 配置
+# ---------------------------------------------------------------------------
+
+
+def config_home() -> str:
+    return expand_path(os.environ.get("AGY_ACCOUNTS_HOME", "~/.config/agy-accounts"))
+
+
+def config_path() -> str:
+    explicit = os.environ.get("AGY_ACCOUNTS_CONFIG", "").strip()
+    if explicit:
+        return expand_path(explicit)
+    return os.path.join(config_home(), "config.json")
+
+
+def load_config(path: Optional[str] = None) -> Dict[str, Any]:
+    path = expand_path(path) if path else config_path()
+    cfg: Dict[str, Any] = dict(DEFAULTS)
+    stored = read_json(path)
+    for key, value in stored.items():
+        if key in cfg and value is not None:
+            cfg[key] = value
+
+    for env, key in ENV_OVERRIDES.items():
+        value = os.environ.get(env)
+        if value is None or value == "":
+            continue
+        if key in ("listen_port",):
+            try:
+                cfg[key] = int(value)
+            except ValueError:
+                raise SystemExit("环境变量 %s 必须是整数" % env)
+        else:
+            cfg[key] = value
+
+    cfg["config_path"] = path
+    cfg["config_home"] = os.path.dirname(path) or "."
+    cfg["token_path"] = expand_path(cfg["token_path"])
+    cfg["accounts_dir"] = expand_path(cfg["accounts_dir"])
+    cfg["probe_url"] = str(cfg.get("probe_url") or "").strip()
+    cfg["app_url"] = str(cfg.get("app_url") or "").strip()
+    cfg["listen_host"] = str(cfg.get("listen_host") or "127.0.0.1")
+    cfg["listen_port"] = int(cfg.get("listen_port") or 8790)
+    for key in ("session_ttl", "probe_timeout", "command_timeout", "stop_timeout",
+                "login_max_failures", "login_window"):
+        try:
+            cfg[key] = int(cfg[key])
+        except (TypeError, ValueError):
+            cfg[key] = int(DEFAULTS[key])
+    cfg["cookie_secure"] = bool(cfg.get("cookie_secure"))
+    cfg["password"] = str(cfg.get("password") or "")
+    cfg["password_hash"] = str(cfg.get("password_hash") or "")
+    return cfg
+
+
+def command_list(cfg: Dict[str, Any], key: str, default: List[str]) -> List[str]:
+    value = cfg.get(key)
+    if isinstance(value, list) and value:
+        return [str(x) for x in value]
+    if isinstance(value, str) and value.strip():
+        return shlex.split(value)
+    return default
+
+
+def service_commands(cfg: Dict[str, Any]) -> Dict[str, List[str]]:
+    name = str(cfg.get("service_name") or "agy-server")
+    return {
+        "stop": command_list(cfg, "stop_command", ["systemctl", "stop", name]),
+        "start": command_list(cfg, "start_command", ["systemctl", "start", name]),
+        "status": command_list(cfg, "status_command",
+                               ["systemctl", "is-active", "--quiet", name]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 密码与会话
+# ---------------------------------------------------------------------------
+
+
+def hash_password(password: str, iterations: int = 200_000) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("ascii"),
+                                 iterations)
+    return "pbkdf2_sha256$%d$%s$%s" % (iterations, salt, digest.hex())
+
+
+def verify_password_hash(password: str, stored: str) -> bool:
+    try:
+        scheme, rounds, salt, expected = stored.split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("ascii"),
+                                     int(rounds))
+        return hmac.compare_digest(digest.hex(), expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def password_configured(cfg: Dict[str, Any]) -> bool:
+    return bool(cfg.get("password") or cfg.get("password_hash"))
+
+
+def check_password(cfg: Dict[str, Any], password: str) -> bool:
+    ok = False
+    if cfg.get("password"):
+        ok = hmac.compare_digest(str(cfg["password"]).encode("utf-8"),
+                                 password.encode("utf-8"))
+    if cfg.get("password_hash") and verify_password_hash(password, str(cfg["password_hash"])):
+        ok = True
+    return ok
+
+
+def load_secret(cfg: Dict[str, Any]) -> bytes:
+    path = os.path.join(cfg["config_home"], "secret.key")
+    raw = read_bytes(path)
+    if raw and len(raw) >= 32:
+        return raw[:32]
+    secret = secrets.token_bytes(32)
+    ensure_dir(cfg["config_home"], 0o700)
+    write_atomic(path, secret, 0o600)
+    return secret
+
+
+def issue_session(secret: bytes, ttl: int) -> str:
+    payload = json.dumps({"exp": now() + max(60, ttl), "n": secrets.token_hex(8)},
+                         separators=(",", ":")).encode("utf-8")
+    body = base64.urlsafe_b64encode(payload).rstrip(b"=")
+    sig = hmac.new(secret, body, hashlib.sha256).digest()
+    return (body + b"." + base64.urlsafe_b64encode(sig).rstrip(b"=")).decode("ascii")
+
+
+def verify_session(secret: bytes, value: str) -> bool:
+    try:
+        body, sig = value.encode("ascii").split(b".", 1)
+        expected = hmac.new(secret, body, hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, base64.urlsafe_b64decode(sig + b"===")):
+            return False
+        payload = json.loads(base64.urlsafe_b64decode(body + b"===").decode("utf-8"))
+        return int(payload.get("exp", 0)) > now()
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
+class LoginLimiter:
+    def __init__(self, max_failures: int, window: int):
+        self.max_failures = max(1, max_failures)
+        self.window = max(30, window)
+        self._lock = threading.Lock()
+        self._failures: Dict[str, List[float]] = {}
+
+    def _prune(self, ip: str) -> List[float]:
+        cutoff = time.time() - self.window
+        values = [t for t in self._failures.get(ip, []) if t >= cutoff]
+        if values:
+            self._failures[ip] = values
+        else:
+            self._failures.pop(ip, None)
+        return values
+
+    def locked_for(self, ip: str) -> int:
+        with self._lock:
+            values = self._prune(ip)
+            if len(values) >= self.max_failures:
+                return max(1, int(values[0] + self.window - time.time()))
+            return 0
+
+    def fail(self, ip: str) -> None:
+        with self._lock:
+            values = self._prune(ip)
+            values.append(time.time())
+            self._failures[ip] = values
+
+    def reset(self, ip: str) -> None:
+        with self._lock:
+            self._failures.pop(ip, None)
+
+
+# ---------------------------------------------------------------------------
+# 令牌解析
+# ---------------------------------------------------------------------------
+
+
+def _jwt_email(token: str) -> str:
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return ""
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        data = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8"))
+        for key in ("email", "preferred_username", "upn"):
+            value = data.get(key)
+            if isinstance(value, str) and EMAIL_RE.match(value):
+                return value
+    except (ValueError, TypeError, UnicodeDecodeError):
+        return ""
+    return ""
+
+
+def extract_email(raw: Optional[bytes]) -> str:
+    if not raw:
+        return ""
+    text = raw.decode("utf-8", "replace").strip().lstrip("\ufeff")
+    if not text:
+        return ""
+    obj: Any = None
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        obj = None
+
+    if isinstance(obj, dict):
+        found: List[str] = []
+        seen = set()
+
+        def walk(node: Any, depth: int = 0) -> None:
+            if depth > 6 or id(node) in seen:
+                return
+            if isinstance(node, dict):
+                seen.add(id(node))
+                for key, value in node.items():
+                    lk = str(key).lower()
+                    if lk in ("email", "account", "username", "preferred_username") and \
+                            isinstance(value, str) and EMAIL_RE.match(value.strip()):
+                        found.append(value.strip())
+                    elif lk in ("id_token", "access_token") and isinstance(value, str) \
+                            and JWT_RE.match(value):
+                        mail = _jwt_email(value)
+                        if mail:
+                            found.append(mail)
+                    else:
+                        walk(value, depth + 1)
+            elif isinstance(node, list):
+                seen.add(id(node))
+                for item in node[:50]:
+                    walk(item, depth + 1)
+
+        walk(obj)
+        if found:
+            return found[0]
+
+    if JWT_RE.match(text):
+        mail = _jwt_email(text)
+        if mail:
+            return mail
+
+    match = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", text)
+    return match.group(0) if match else ""
+
+
+def token_label(raw: Optional[bytes]) -> str:
+    """日志里只能出现长度与摘要前缀，绝不输出内容。"""
+    if raw is None:
+        return "missing"
+    return "len=%d sha256=%s" % (len(raw), hashlib.sha256(raw).hexdigest()[:8])
+
+
+# ---------------------------------------------------------------------------
+# 账号快照
+# ---------------------------------------------------------------------------
+
+
+def slugify(name: str) -> str:
+    text = unicodedata.normalize("NFKC", name).strip().lower()
+    text = re.sub(r"[^\w\u4e00-\u9fff.\-]+", "-", text, flags=re.UNICODE)
+    text = re.sub(r"-{2,}", "-", text).strip(".-_")
+    text = text[:48].strip(".-_")
+    return text or "account"
+
+
+def safe_account_id(account_id: str) -> str:
+    if not isinstance(account_id, str) or not re.fullmatch(r"[\w.\-]{1,64}", account_id,
+                                                            flags=re.UNICODE):
+        raise ApiError(400, "账号标识不合法")
+    if account_id in (".", ".."):
+        raise ApiError(400, "账号标识不合法")
+    return account_id
+
+
+def account_dir(cfg: Dict[str, Any], account_id: str) -> str:
+    account_id = safe_account_id(account_id)
+    root = os.path.realpath(cfg["accounts_dir"])
+    path = os.path.realpath(os.path.join(root, account_id))
+    if os.path.dirname(path) != root:
+        raise ApiError(400, "账号标识不合法")
+    return path
+
+
+def account_meta_path(path: str) -> str:
+    return os.path.join(path, "meta.json")
+
+
+def account_token_path(path: str) -> str:
+    return os.path.join(path, "token")
+
+
+def _clean_name(name: Any) -> str:
+    if not isinstance(name, str):
+        raise ApiError(400, "请填写账号名称")
+    name = name.strip()
+    if not name:
+        raise ApiError(400, "请填写账号名称")
+    if len(name) > MAX_NAME:
+        raise ApiError(400, "账号名称不能超过 %d 个字符" % MAX_NAME)
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        raise ApiError(400, "账号名称包含不可见字符")
+    return name
+
+
+def _unique_id(cfg: Dict[str, Any], name: str, exclude: str = "") -> str:
+    base = slugify(name)
+    candidate = base
+    counter = 2
+    while True:
+        path = os.path.join(cfg["accounts_dir"], candidate)
+        if candidate == exclude or not os.path.exists(path):
+            return candidate
+        candidate = "%s-%d" % (base[:56], counter)
+        counter += 1
+
+
+def list_accounts(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    root = cfg["accounts_dir"]
+    if not os.path.isdir(root):
+        return []
+    live = read_bytes(cfg["token_path"])
+    live_digest = sha256(live) if live else None
+    result: List[Dict[str, Any]] = []
+    try:
+        entries = list(os.scandir(root))
+    except OSError as exc:
+        log.warning("列出账号目录失败：%s", exc.__class__.__name__)
+        return []
+    for entry in entries:
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        account_id = entry.name
+        try:
+            safe_account_id(account_id)
+        except ApiError:
+            continue
+        path = entry.path
+        meta = read_json(account_meta_path(path))
+        token = read_bytes(account_token_path(path))
+        is_current = bool(live_digest and token and sha256(token) == live_digest)
+        name = str(meta.get("name") or account_id)
+        email = str(meta.get("email") or "") or extract_email(token)
+        result.append({
+            "id": account_id,
+            "name": name,
+            "email": email,
+            "is_current": is_current,
+            "created_at": int(meta.get("created_at") or 0),
+            "last_used_at": int(meta.get("last_used_at") or 0),
+            "created_at_iso": iso_time(int(meta.get("created_at") or 0)),
+            "last_used_at_iso": iso_time(int(meta.get("last_used_at") or 0)),
+            "has_token": bool(token),
+        })
+    result.sort(key=lambda item: (not item["is_current"],
+                                  -int(item["last_used_at"] or 0),
+                                  item["name"].lower()))
+    return result
+
+
+def find_account_by_name(cfg: Dict[str, Any], name: str, exclude: str = "") -> Optional[str]:
+    wanted = name.strip().lower()
+    for account in list_accounts(cfg):
+        if account["id"] == exclude:
+            continue
+        if str(account["name"]).strip().lower() == wanted:
+            return str(account["id"])
+    return None
+
+
+def save_account(cfg: Dict[str, Any], name: str) -> Dict[str, Any]:
+    name = _clean_name(name)
+    live = read_bytes(cfg["token_path"])
+    if live is None and os.path.exists(cfg["token_path"]):
+        raise ApiError(500, "令牌文件存在但不可读，请检查权限：%s" % cfg["token_path"])
+    if not live or not live.strip():
+        raise ApiError(400, "当前没有可保存的登录令牌：%s 不存在或为空。"
+                            "请先在 Antigravity 页面完成 Google 登录。" % cfg["token_path"])
+
+    duplicate = find_account_by_name(cfg, name)
+    if duplicate:
+        raise ApiError(409, "已存在同名账号「%s」，请换一个名称。" % name)
+
+    live_digest = sha256(live)
+    for account in list_accounts(cfg):
+        path = account_dir(cfg, account["id"])
+        token = read_bytes(account_token_path(path))
+        if token and sha256(token) == live_digest:
+            raise ApiError(409, "当前登录已保存为「%s」，无需重复保存。" % account["name"])
+
+    ensure_dir(cfg["accounts_dir"], 0o700)
+    account_id = _unique_id(cfg, name)
+    path = os.path.join(cfg["accounts_dir"], account_id)
+    ensure_dir(path, 0o700)
+    stamp = now()
+    meta = {
+        "id": account_id,
+        "name": name,
+        "email": extract_email(live),
+        "created_at": stamp,
+        "last_used_at": stamp,
+    }
+    write_atomic(account_token_path(path), live, 0o600)
+    write_json_atomic(account_meta_path(path), meta, 0o600)
+    log.info("已保存账号快照 id=%s (%s)", account_id, token_label(live))
+    return {"id": account_id, "name": name, "email": meta["email"]}
+
+
+def read_target_token(cfg: Dict[str, Any], account_id: str) -> Tuple[str, bytes, Dict[str, Any]]:
+    path = account_dir(cfg, account_id)
+    if not os.path.isdir(path):
+        raise ApiError(404, "目标账号不存在")
+    token = read_bytes(account_token_path(path))
+    if not token or not token.strip():
+        raise ApiError(400, "目标账号的令牌快照为空或不可读")
+    meta = read_json(account_meta_path(path))
+    return path, token, meta
+
+
+def touch_account(path: str, meta: Dict[str, Any], stamp: Optional[int] = None) -> Dict[str, Any]:
+    meta = dict(meta)
+    meta["last_used_at"] = stamp or now()
+    write_json_atomic(account_meta_path(path), meta, 0o600)
+    return meta
+
+
+def sync_rotated_token(cfg: Dict[str, Any], live: bytes) -> Optional[str]:
+    """Google 刷新令牌可能轮换，切换前把线上令牌写回匹配的快照。"""
+    live_digest = sha256(live)
+    for account in list_accounts(cfg):
+        path = account_dir(cfg, account["id"])
+        token = read_bytes(account_token_path(path))
+        if token and sha256(token) == live_digest:
+            write_atomic(account_token_path(path), live, 0o600)
+            return str(account["id"])
+    return None
+
+
+def rename_account(cfg: Dict[str, Any], account_id: str, name: str) -> Dict[str, Any]:
+    name = _clean_name(name)
+    path, _token, meta = read_target_token(cfg, account_id)
+    duplicate = find_account_by_name(cfg, name, exclude=account_id)
+    if duplicate:
+        raise ApiError(409, "已存在同名账号「%s」。" % name)
+    meta = dict(meta)
+    meta["name"] = name
+    meta["id"] = account_id
+    write_json_atomic(account_meta_path(path), meta, 0o600)
+    log.info("账号已重命名 id=%s -> %s", account_id, name)
+    return {"id": account_id, "name": name}
+
+
+def delete_account(cfg: Dict[str, Any], account_id: str) -> None:
+    path = account_dir(cfg, account_id)
+    if not os.path.isdir(path):
+        raise ApiError(404, "账号不存在")
+    shutil.rmtree(path)
+    log.info("已删除账号快照 id=%s", account_id)
+
+
+# ---------------------------------------------------------------------------
+# 服务启停与切换
+# ---------------------------------------------------------------------------
+
+
+def run_command(cfg: Dict[str, Any], args: List[str], timeout: Optional[int] = None) -> int:
+    timeout = int(timeout or cfg["command_timeout"])
+    log.info("执行命令：%s", " ".join(shlex.quote(x) for x in args))
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                              env=os.environ.copy())
+    except FileNotFoundError:
+        raise SwitchError("找不到命令：%s" % args[0], 500)
+    except subprocess.TimeoutExpired:
+        raise SwitchError("命令执行超时（%ds）：%s" % (timeout, args[0]), 504)
+    except OSError as exc:
+        raise SwitchError("命令无法执行：%s" % exc.__class__.__name__, 500)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip().replace("\n", " ")[:300]
+        log.warning("命令返回 %s：%s %s", proc.returncode, args[0], detail)
+        raise SwitchError("命令执行失败（退出码 %s）" % proc.returncode, 500,
+                          detail=detail or None)
+    return proc.returncode
+
+
+def service_active(cfg: Dict[str, Any]) -> Optional[bool]:
+    commands = service_commands(cfg)["status"]
+    try:
+        proc = subprocess.run(commands, capture_output=True, text=True, timeout=5,
+                              env=os.environ.copy())
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode == 0:
+        return True
+    if proc.returncode in (3, 4):
+        return False
+    return None
+
+
+def stop_service(cfg: Dict[str, Any]) -> None:
+    commands = service_commands(cfg)
+    run_command(cfg, commands["stop"], cfg["command_timeout"])
+    deadline = time.time() + max(3, cfg["stop_timeout"])
+    while time.time() < deadline:
+        active = service_active(cfg)
+        if active is False:
+            return
+        if active is None:
+            log.warning("无法确认服务是否已停止（status 命令返回未知），继续前等待 1 秒")
+            time.sleep(1.0)
+            return
+        time.sleep(0.4)
+    raise SwitchError("服务在 %ds 内仍未停止" % cfg["stop_timeout"], 504)
+
+
+def start_service(cfg: Dict[str, Any]) -> None:
+    commands = service_commands(cfg)
+    run_command(cfg, commands["start"], cfg["command_timeout"])
+
+
+def probe_service(cfg: Dict[str, Any]) -> None:
+    url = cfg.get("probe_url") or ""
+    if not url:
+        return
+    timeout = max(3, int(cfg["probe_timeout"]))
+    deadline = time.time() + timeout
+    last = "无响应"
+    while time.time() < deadline:
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "%s/%s" % (APP_NAME, VERSION)})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                if int(response.status) < 500:
+                    return
+                last = "HTTP %s" % response.status
+        except urllib.error.HTTPError as exc:
+            if exc.code < 500:
+                return
+            last = "HTTP %s" % exc.code
+        except Exception as exc:  # URLError, socket.timeout, ...
+            last = exc.__class__.__name__
+        time.sleep(1.0)
+    raise SwitchError("服务在 %ds 内未就绪（%s）" % (timeout, last), 504)
+
+
+class Switcher:
+    """串行执行切换；切换期间第二次请求直接收到 409。"""
+
+    def __init__(self, cfg: Dict[str, Any]):
+        self.cfg = cfg
+        self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._state: Dict[str, Any] = {"active": False, "started_at": 0, "account": ""}
+
+    def state(self) -> Dict[str, Any]:
+        with self._state_lock:
+            return dict(self._state)
+
+    def switch(self, account_id: str) -> Dict[str, Any]:
+        if not self._lock.acquire(blocking=False):
+            raise ApiError(409, "正在切换账号，请等待当前操作完成。")
+        with self._state_lock:
+            self._state = {"active": True, "started_at": now(), "account": account_id}
+        try:
+            return self._do_switch(account_id)
+        finally:
+            with self._state_lock:
+                self._state = {"active": False, "started_at": 0, "account": ""}
+            self._lock.release()
+
+    def _do_switch(self, account_id: str) -> Dict[str, Any]:
+        cfg = self.cfg
+        path, target, meta = read_target_token(cfg, account_id)
+        name = str(meta.get("name") or account_id)
+
+        live = read_bytes(cfg["token_path"])
+        if live is None and os.path.exists(cfg["token_path"]):
+            raise ApiError(500, "令牌文件存在但不可读，请检查权限：%s" % cfg["token_path"])
+        if live is not None and live == target:
+            touch_account(path, meta)
+            return {"ok": True, "already_current": True, "name": name,
+                    "message": "当前已经是「%s」" % name}
+
+        log.info("开始切换账号 id=%s live=%s target=%s", account_id,
+                 token_label(live), token_label(target))
+
+        if live:
+            rotated = sync_rotated_token(cfg, live)
+            if rotated:
+                log.info("已把轮换后的线上令牌写回快照 id=%s", rotated)
+
+        backup = live
+        stopped = False
+        mutated = False
+        try:
+            stop_service(cfg)
+            stopped = True
+            if backup is None:
+                try:
+                    os.unlink(cfg["token_path"])
+                except FileNotFoundError:
+                    pass
+            write_atomic(cfg["token_path"], target, 0o600)
+            mutated = True
+            start_service(cfg)
+            probe_service(cfg)
+        except SwitchError as exc:
+            if not stopped and not mutated:
+                log.error("切换未开始 id=%s：%s", account_id, exc.message)
+                extra = {"rolled_back": True, "unchanged": True}
+                if exc.detail:
+                    extra["detail"] = exc.detail
+                raise ApiError(exc.status, exc.message + "；线上凭据未改动", extra)
+            rolled_back = self._rollback(backup, stopped or mutated)
+            message = exc.message
+            if rolled_back:
+                message += "；已回滚到切换前的凭据"
+            else:
+                message += "；回滚未完成，请手动检查服务与令牌文件"
+            log.error("切换失败 id=%s：%s", account_id, message)
+            extra = {"rolled_back": rolled_back}
+            if exc.detail:
+                extra["detail"] = exc.detail
+            raise ApiError(exc.status, message, extra)
+        except Exception as exc:  # 未预期的文件/系统错误
+            log.exception("切换出现未预期错误 id=%s", account_id)
+            if not stopped and not mutated:
+                raise ApiError(500, "切换失败：%s；线上凭据未改动"
+                               % exc.__class__.__name__, {"rolled_back": True,
+                                                          "unchanged": True})
+            rolled_back = self._rollback(backup, stopped or mutated)
+            message = "切换失败：%s" % exc.__class__.__name__
+            message += ("；已回滚到切换前的凭据" if rolled_back
+                        else "；回滚未完成，请手动检查服务与令牌文件")
+            raise ApiError(500, message, {"rolled_back": rolled_back})
+
+        meta = touch_account(path, meta)
+        log.info("账号切换完成 id=%s", account_id)
+        return {
+            "ok": True,
+            "already_current": False,
+            "name": name,
+            "email": str(meta.get("email") or ""),
+            "app_url": cfg.get("app_url") or "",
+            "message": "已切换到「%s」" % name,
+        }
+
+    def _rollback(self, backup: Optional[bytes], need_stop: bool) -> bool:
+        cfg = self.cfg
+        ok = True
+        if need_stop:
+            try:
+                stop_service(cfg)
+            except SwitchError as exc:
+                log.error("回滚停止服务失败：%s", exc.message)
+                ok = False
+        try:
+            if backup is None:
+                try:
+                    os.unlink(cfg["token_path"])
+                except FileNotFoundError:
+                    pass
+            else:
+                write_atomic(cfg["token_path"], backup, 0o600)
+        except OSError as exc:
+            log.error("回滚写入令牌失败：%s", exc.__class__.__name__)
+            ok = False
+        try:
+            start_service(cfg)
+        except SwitchError as exc:
+            log.error("回滚启动服务失败：%s", exc.message)
+            ok = False
+        return ok
+
+
+# ---------------------------------------------------------------------------
+# HTTP 面板
+# ---------------------------------------------------------------------------
+
+
+def _json_bytes(obj: Any) -> bytes:
+    return json.dumps(obj, ensure_ascii=False).encode("utf-8")
+
+
+def _client_ip(handler: BaseHTTPRequestHandler) -> str:
+    # 面板默认仅监听回环地址；不信任可伪造的 X-Forwarded-For，避免绕过登录限速。
+    # 放在反向代理后时，所有请求共享同一个限速计数，对单用户面板可以接受。
+    return str(handler.client_address[0])
+
+
+class PanelServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address: Tuple[str, int], app: "App"):
+        self.app = app
+        super().__init__(address, PanelHandler)
+
+
+class PanelHandler(BaseHTTPRequestHandler):
+    server_version = "%s/%s" % (APP_NAME, VERSION)
+    sys_version = ""
+
+    @property
+    def app(self) -> "App":
+        return self.server.app  # type: ignore[attr-defined]
+
+    # -- 基础 ------------------------------------------------------------
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        log.info("%s %s", _client_ip(self), fmt % args)
+
+    def _send(self, status: int, payload: Optional[bytes] = None, content_type: str = "",
+              extra_headers: Optional[Dict[str, str]] = None) -> None:
+        self.send_response(status)
+        if content_type:
+            self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload or b"")))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cache-Control", "no-store")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        if payload and self.command != "HEAD":
+            self.wfile.write(payload)
+
+    def _json(self, status: int, obj: Any, extra_headers: Optional[Dict[str, str]] = None) -> None:
+        self._send(status, _json_bytes(obj), "application/json; charset=utf-8", extra_headers)
+
+    def _error(self, status: int, message: str, extra: Optional[Dict[str, Any]] = None) -> None:
+        body = {"ok": False, "error": message}
+        if extra:
+            body.update(extra)
+        self._json(status, body)
+
+    def _read_body(self) -> Dict[str, Any]:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise ApiError(400, "请求体长度不合法")
+        if length <= 0:
+            return {}
+        if length > MAX_BODY:
+            raise ApiError(413, "请求体过大")
+        raw = self.rfile.read(length)
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise ApiError(400, "请求体必须是 JSON")
+        if not isinstance(value, dict):
+            raise ApiError(400, "请求体必须是 JSON 对象")
+        return value
+
+    def _cookie_value(self) -> str:
+        raw = self.headers.get("Cookie", "")
+        if not raw:
+            return ""
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(raw)
+        except http.cookies.CookieError:
+            return ""
+        morsel = jar.get(COOKIE_NAME)
+        return morsel.value if morsel else ""
+
+    def _authorized(self) -> bool:
+        token = self._cookie_value()
+        return bool(token) and verify_session(self.app.secret, token)
+
+    def _require_auth(self) -> None:
+        if not self._authorized():
+            raise ApiError(401, "未登录或会话已过期")
+
+    def _require_csrf(self) -> None:
+        if self.headers.get(CSRF_HEADER, "") != "1":
+            raise ApiError(400, "缺少请求校验头")
+        origin = self.headers.get("Origin", "")
+        if origin:
+            host = self.headers.get("Host", "")
+            try:
+                parsed = urllib.parse.urlparse(origin)
+            except ValueError:
+                raise ApiError(400, "Origin 不合法")
+            if parsed.netloc != host:
+                raise ApiError(403, "跨站请求被拒绝")
+
+    def _security_headers(self) -> Dict[str, str]:
+        headers = {
+            "Content-Security-Policy": (
+                "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                "connect-src 'self'; font-src 'self'; frame-ancestors 'none'; "
+                "base-uri 'none'; form-action 'self'"
+            ),
+            "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+        }
+        if self.app.cfg.get("cookie_secure"):
+            headers["Strict-Transport-Security"] = "max-age=31536000"
+        return headers
+
+    # -- 路由 ------------------------------------------------------------
+
+    def do_GET(self) -> None:  # noqa: N802
+        try:
+            path = urllib.parse.urlparse(self.path).path
+            if path in ("/", "/index.html"):
+                self._serve_file("index.html", "text/html; charset=utf-8")
+                return
+            if path == "/favicon.svg":
+                self._serve_file("favicon.svg", "image/svg+xml")
+                return
+            if path == "/manifest.webmanifest":
+                self._serve_file("manifest.webmanifest", "application/manifest+json")
+                return
+            if path == "/healthz":
+                self._json(200, {"ok": True, "version": VERSION})
+                return
+            if path == "/api/status":
+                self._require_auth()
+                self._json(200, self.app.status_payload())
+                return
+            raise ApiError(404, "未找到该页面")
+        except ApiError as exc:
+            self._error(exc.status, exc.message, exc.extra)
+        except Exception:
+            log.exception("GET 请求处理失败")
+            self._error(500, "服务器内部错误")
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        self.do_GET()
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            self._require_csrf()
+            path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+
+            if path == "/api/login":
+                self._handle_login()
+                return
+
+            self._require_auth()
+
+            if path == "/api/logout":
+                expired = ("%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict"
+                           % COOKIE_NAME)
+                if self.app.cfg.get("cookie_secure"):
+                    expired += "; Secure"
+                self._json(200, {"ok": True}, {"Set-Cookie": expired})
+                return
+            if path == "/api/accounts":
+                body = self._read_body()
+                result = save_account(self.app.cfg, body.get("name", ""))
+                self._json(200, {"ok": True, "account": result})
+                return
+            if path == "/api/status":
+                self._json(200, self.app.status_payload())
+                return
+
+            parts = [part for part in path.split("/") if part]
+            if len(parts) == 4 and parts[0] == "api" and parts[1] == "accounts":
+                account_id = urllib.parse.unquote(parts[2])
+                action = parts[3]
+                if action == "switch":
+                    result = self.app.switcher.switch(account_id)
+                    self._json(200, result)
+                    return
+                if action == "rename":
+                    body = self._read_body()
+                    result = rename_account(self.app.cfg, account_id, body.get("name", ""))
+                    self._json(200, {"ok": True, "account": result})
+                    return
+                if action == "delete":
+                    delete_account(self.app.cfg, account_id)
+                    self._json(200, {"ok": True})
+                    return
+            raise ApiError(404, "接口不存在")
+        except ApiError as exc:
+            self._error(exc.status, exc.message, exc.extra)
+        except Exception:
+            log.exception("POST 请求处理失败")
+            self._error(500, "服务器内部错误")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        try:
+            self._require_csrf()
+            self._require_auth()
+            path = urllib.parse.urlparse(self.path).path.rstrip("/")
+            parts = [part for part in path.split("/") if part]
+            if len(parts) == 3 and parts[0] == "api" and parts[1] == "accounts":
+                delete_account(self.app.cfg, urllib.parse.unquote(parts[2]))
+                self._json(200, {"ok": True})
+                return
+            raise ApiError(404, "接口不存在")
+        except ApiError as exc:
+            self._error(exc.status, exc.message, exc.extra)
+        except Exception:
+            log.exception("DELETE 请求处理失败")
+            self._error(500, "服务器内部错误")
+
+    def _serve_file(self, name: str, content_type: str) -> None:
+        path = os.path.join(WEB_DIR, name)
+        data = read_bytes(path)
+        if data is None:
+            raise ApiError(500, "面板静态文件缺失：%s" % name)
+        self._send(200, data, content_type, self._security_headers())
+
+    def _handle_login(self) -> None:
+        ip = _client_ip(self)
+        locked = self.app.limiter.locked_for(ip)
+        if locked:
+            raise ApiError(429, "尝试次数过多，请 %d 秒后再试" % locked,
+                           {"retry_after": locked})
+        body = self._read_body()
+        password = body.get("password")
+        if not isinstance(password, str) or not password:
+            raise ApiError(400, "请输入密码")
+        if not check_password(self.app.cfg, password):
+            self.app.limiter.fail(ip)
+            log.warning("登录失败 ip=%s", ip)
+            raise ApiError(401, "密码不正确")
+        self.app.limiter.reset(ip)
+        value = issue_session(self.app.secret, int(self.app.cfg["session_ttl"]))
+        cookie = "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict" % (
+            COOKIE_NAME, value, int(self.app.cfg["session_ttl"]))
+        if self.app.cfg.get("cookie_secure"):
+            cookie += "; Secure"
+        self._json(200, {"ok": True, "version": VERSION}, {"Set-Cookie": cookie})
+        log.info("登录成功 ip=%s", ip)
+
+
+class App:
+    def __init__(self, cfg: Dict[str, Any]):
+        self.cfg = cfg
+        self.secret = load_secret(cfg)
+        self.limiter = LoginLimiter(int(cfg["login_max_failures"]), int(cfg["login_window"]))
+        self.switcher = Switcher(cfg)
+
+    def status_payload(self) -> Dict[str, Any]:
+        accounts = list_accounts(self.cfg)
+        active = service_active(self.cfg)
+        live = read_bytes(self.cfg["token_path"])
+        return {
+            "ok": True,
+            "version": VERSION,
+            "accounts": accounts,
+            "current": next((a["id"] for a in accounts if a["is_current"]), ""),
+            "token_present": bool(live and live.strip()),
+            "token_email": extract_email(live),
+            "service": {
+                "name": str(self.cfg.get("service_name") or "agy-server"),
+                "active": active,
+            },
+            "switching": self.switcher.state(),
+            "app_url": self.cfg.get("app_url") or "",
+            "token_path": self.cfg["token_path"],
+            "accounts_dir": self.cfg["accounts_dir"],
+        }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def setup_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, str(level).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(message)s",
+        stream=sys.stderr,
+    )
+
+
+def ensure_runtime(cfg: Dict[str, Any]) -> None:
+    if not password_configured(cfg):
+        raise SystemExit(
+            "拒绝启动：未配置面板密码。请设置 config.json 的 password_hash，"
+            "或使用环境变量 AGY_ACCOUNTS_PASSWORD。\n"
+            "生成密码哈希：python3 %s hash-password" % os.path.basename(__file__)
+        )
+    if not os.path.isfile(os.path.join(WEB_DIR, "index.html")):
+        raise SystemExit("拒绝启动：缺少面板文件 %s" % os.path.join(WEB_DIR, "index.html"))
+    ensure_dir(cfg["accounts_dir"], 0o700)
+    ensure_dir(cfg["config_home"], 0o700)
+    token_dir = os.path.dirname(cfg["token_path"])
+    if token_dir and not os.path.isdir(token_dir):
+        log.warning("令牌目录尚不存在：%s（agy-server 首次登录后会创建）", token_dir)
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    setup_logging(str(cfg["log_level"]))
+    ensure_runtime(cfg)
+    app = App(cfg)
+    try:
+        server = PanelServer((cfg["listen_host"], cfg["listen_port"]), app)
+    except OSError as exc:
+        log.error("无法监听 %s:%s：%s", cfg["listen_host"], cfg["listen_port"],
+                  exc.__class__.__name__)
+        return 1
+
+    log.info("%s %s 已启动：http://%s:%d/", APP_NAME, VERSION,
+             cfg["listen_host"], cfg["listen_port"])
+    log.info("令牌路径：%s", cfg["token_path"])
+    log.info("账号目录：%s", cfg["accounts_dir"])
+    log.info("服务名：%s", cfg.get("service_name") or "agy-server")
+
+    def shutdown(signum: int, _frame: Any) -> None:
+        log.info("收到信号 %s，正在退出", signum)
+
+        def wait_and_stop() -> None:
+            deadline = time.time() + 45
+            while app.switcher.state().get("active") and time.time() < deadline:
+                time.sleep(0.5)
+            if app.switcher.state().get("active"):
+                log.warning("切换仍在进行，强制退出可能留下未完成状态")
+            server.shutdown()
+
+        threading.Thread(target=wait_and_stop, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    try:
+        server.serve_forever(poll_interval=0.5)
+    finally:
+        server.server_close()
+        log.info("已退出")
+    return 0
+
+
+def cmd_hash_password(args: argparse.Namespace) -> int:
+    password = args.password
+    if password == "-":
+        password = sys.stdin.readline().rstrip("\n")
+    if not password:
+        first = getpass.getpass("面板密码：")
+        second = getpass.getpass("再输入一次：")
+        if first != second:
+            print("两次输入不一致", file=sys.stderr)
+            return 1
+        password = first
+    if len(password) < 8:
+        print("密码至少 8 个字符", file=sys.stderr)
+        return 1
+    print(hash_password(password))
+    return 0
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    path = expand_path(args.config) if args.config else config_path()
+    if os.path.exists(path) and not args.force:
+        print("配置文件已存在：%s（使用 --force 覆盖）" % path, file=sys.stderr)
+        return 1
+    ensure_dir(os.path.dirname(path) or ".", 0o700)
+    cfg = dict(DEFAULTS)
+    if args.password:
+        cfg["password_hash"] = hash_password(args.password)
+    cfg["token_path"] = expand_path(cfg["token_path"])
+    cfg["accounts_dir"] = expand_path(cfg["accounts_dir"])
+    write_json_atomic(path, cfg, 0o600)
+    print("已写入配置：%s" % path)
+    if not args.password:
+        print("请补充 password_hash（运行 hash-password），或设置 AGY_ACCOUNTS_PASSWORD。")
+    return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    cfg = load_config(args.config)
+    setup_logging("WARNING")
+    problems = 0
+
+    def line(ok: bool, label: str, detail: str = "") -> None:
+        nonlocal problems
+        if not ok:
+            problems += 1
+        print("%s %s%s" % ("[ OK ]" if ok else "[FAIL]", label,
+                           ("  " + detail) if detail else ""))
+
+    line(sys.version_info >= (3, 9), "Python >= 3.9", sys.version.split()[0])
+    line(password_configured(cfg), "面板密码已配置",
+         "password_hash" if cfg.get("password_hash") else
+         ("password（明文，建议改用哈希）" if cfg.get("password") else "未配置"))
+    line(os.path.isdir(os.path.dirname(cfg["token_path"])), "令牌目录存在",
+         os.path.dirname(cfg["token_path"]))
+    live = read_bytes(cfg["token_path"])
+    line(live is not None and bool(live and live.strip()), "线上令牌可读取",
+         token_label(live))
+    if live:
+        print("       识别邮箱：%s" % (extract_email(live) or "未识别"))
+    line(os.path.isdir(cfg["accounts_dir"]), "账号目录存在", cfg["accounts_dir"])
+    writable = os.access(cfg["accounts_dir"] if os.path.isdir(cfg["accounts_dir"])
+                         else os.path.dirname(cfg["accounts_dir"]), os.W_OK)
+    line(writable, "账号目录可写")
+    line(os.path.isfile(os.path.join(WEB_DIR, "index.html")), "面板静态文件存在", WEB_DIR)
+    commands = service_commands(cfg)
+    for key in ("stop", "start", "status"):
+        executable = shutil.which(commands[key][0])
+        line(bool(executable), "命令可用：%s" % key, commands[key][0])
+    active = service_active(cfg)
+    print("[INFO] 服务状态：%s" % ("运行中" if active else "已停止" if active is False else "未知"))
+    print("[INFO] 账号数量：%d" % len(list_accounts(cfg)))
+    return 1 if problems else 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="agy-accounts",
+        description="Antigravity 多账号切换面板（仅替换 OAuth token，不动业务数据）",
+    )
+    parser.add_argument("--version", action="version", version="%s %s" % (APP_NAME, VERSION))
+    parser.add_argument("--config", help="配置文件路径（默认 ~/.config/agy-accounts/config.json）")
+    sub = parser.add_subparsers(dest="command")
+
+    serve = sub.add_parser("serve", help="启动面板服务")
+    serve.set_defaults(func=cmd_serve)
+
+    hashed = sub.add_parser("hash-password", help="生成 password_hash")
+    hashed.add_argument("--password", help="直接提供密码（不推荐，会留在 shell 历史里）")
+    hashed.set_defaults(func=cmd_hash_password)
+
+    init = sub.add_parser("init", help="生成默认配置文件")
+    init.add_argument("--force", action="store_true", help="覆盖已有配置")
+    init.add_argument("--password", help="同时写入密码哈希")
+    init.set_defaults(func=cmd_init)
+
+    check = sub.add_parser("check", help="自检部署环境")
+    check.set_defaults(func=cmd_check)
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "func", None):
+        args.func = cmd_serve
+    try:
+        return int(args.func(args))
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

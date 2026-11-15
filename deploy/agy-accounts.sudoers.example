@@ -1,0 +1,10 @@
+# 仅为 dedicated 用户授予 agy-server 的三条 systemctl 命令（可选方案）。
+# 安装到 /etc/sudoers.d/agy-accounts，权限必须是 0440，并用 visudo -c 校验。
+#
+# 仅当面板不以 root 运行，而是以低权限用户（例如 agyaccounts）运行时才需要。
+# 同时在 config.json 中把命令改成：
+#   "stop_command":   ["sudo", "-n", "/usr/bin/systemctl", "stop", "agy-server"]
+#   "start_command":  ["sudo", "-n", "/usr/bin/systemctl", "start", "agy-server"]
+#   "status_command": ["sudo", "-n", "/usr/bin/systemctl", "is-active", "--quiet", "agy-server"]
+
+agyaccounts ALL=(root) NOPASSWD: /usr/bin/systemctl stop agy-server, /usr/bin/systemctl start agy-server, /usr/bin/systemctl is-active --quiet agy-server

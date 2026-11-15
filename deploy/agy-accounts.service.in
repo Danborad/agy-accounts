@@ -1,0 +1,36 @@
+[Unit]
+Description=agy-accounts · Antigravity multi-account switch panel
+Documentation=https://github.com/Danborad/agy-accounts
+After=network-online.target agy-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__PREFIX__
+ExecStart=__PYTHON__ __PREFIX__/agy_accounts.py serve --config __CONFIG__
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOME=__HOME__
+
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=60s
+
+# 面板只监听回环地址；仍按最小权限收紧文件系统。
+NoNewPrivileges=no
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__STATE_DIR__ __CONFIG_DIR__ __TOKEN_DIR__
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
