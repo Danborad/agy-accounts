@@ -423,6 +423,27 @@ class PanelTest(unittest.TestCase):
         self.assertTrue(quota["groups"][0]["windows"]["weekly"]["disabled"])
         self.assertNotIn("monthly", quota["groups"][0]["windows"])
 
+    def test_quota_model_parsing(self):
+        models = agy_accounts.normalize_models({
+            "claude-opus-4-6-thinking": {
+                "displayName": "Claude Opus 4.6 (Thinking)",
+                "quotaInfo": {"remainingFraction": 1, "resetTime": "2026-11-15T22:27:22Z"},
+                "supportsThinking": True,
+            },
+            "gemini-3.8-flash-tiered": {
+                "quotaInfo": {"remainingFraction": 0.985, "resetTime": "2026-11-15T22:27:22Z"},
+            },
+            "chat_23310": {"quotaInfo": {"remainingFraction": 1}},
+            "broken": {"quotaInfo": {}},
+        })
+        names = {m["name"]: m for m in models}
+        self.assertIn("claude-opus-4-6-thinking", names)
+        self.assertEqual(names["claude-opus-4-6-thinking"]["percentage"], 100.0)
+        self.assertTrue(names["claude-opus-4-6-thinking"]["supports_thinking"])
+        self.assertAlmostEqual(names["gemini-3.8-flash-tiered"]["percentage"], 98.5)
+        self.assertNotIn("chat_23310", names)
+        self.assertNotIn("broken", names)
+
     def test_quota_cache_key_ignores_access_token(self):
         first = b'{"token":{"refresh_token":"rt","access_token":"a1"}}'
         second = b'{"token":{"refresh_token":"rt","access_token":"a2"}}'

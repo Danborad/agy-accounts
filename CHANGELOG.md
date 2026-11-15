@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.3.1] - 2026-11-16
+
+### 修复
+
+- 额度改为先查生产端点 `cloudcode-pa.googleapis.com`
+- 新增 `fetchAvailableModels` 逐模型额度，显示真实的 Claude Opus 4.6、Gemini 3.8 Flash 等模型行
+- 默认固定模型改为当前账号实际存在的两个模型，避免出现空行与错误名称
+- 额度缓存版本升级，旧缓存自动失效
+
 ## [1.3.0] - 2026-11-16
 
 ### 变更

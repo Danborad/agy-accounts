@@ -103,26 +103,43 @@
     });
 
     var models = [];
-    (quota.groups || []).forEach(function (group) {
-      var source = group.windows && (group.windows["5h"] || group.windows.weekly);
-      if (!source) return;
-      var percentage = Math.round(Number(source.remaining) * 100);
-      var names = group.key === "claude"
-        ? ["claude-sonnet-5-5"]
-        : (group.key === "gemini" ? ["gemini-3.1-pro", "gemini-3.8-flash"] : [group.key || "model"]);
-      names.forEach(function (name) {
-        models.push({
-          name: name,
-          display_name: group.label || name,
-          percentage: percentage,
-          percentage_known: true,
-          reset_time: source.reset || "",
+    var reported = Array.isArray(quota.models) ? quota.models : [];
+    if (reported.length) {
+      models = reported.map(function (model) {
+        return {
+          name: model.name,
+          display_name: model.display_name || model.name,
+          percentage: model.percentage,
+          percentage_known: model.percentage !== null && model.percentage !== undefined,
+          observed_remaining_fraction: model.remaining,
+          reset_time: model.reset || "",
           inferred_bucket_id: null,
-          supports_images: false,
-          supports_thinking: false
+          supports_images: Boolean(model.supports_images),
+          supports_thinking: Boolean(model.supports_thinking)
+        };
+      });
+    } else {
+      (quota.groups || []).forEach(function (group) {
+        var source = group.windows && (group.windows["5h"] || group.windows.weekly);
+        if (!source) return;
+        var percentage = Math.round(Number(source.remaining) * 100);
+        var names = group.key === "claude"
+          ? ["claude-opus-4-6-thinking"]
+          : (group.key === "gemini" ? ["gemini-3.8-flash"] : [group.key || "model"]);
+        names.forEach(function (name) {
+          models.push({
+            name: name,
+            display_name: group.label || name,
+            percentage: percentage,
+            percentage_known: true,
+            reset_time: source.reset || "",
+            inferred_bucket_id: null,
+            supports_images: false,
+            supports_thinking: false
+          });
         });
       });
-    });
+    }
 
     return {
       models: models,
@@ -244,7 +261,7 @@
         green_above: 60, red_below: 20
       },
       quota_protection: { enabled: false, threshold_percentage: 10, monitored_models: [] },
-      pinned_quota_models: { models: ["gemini-3.1-pro", "gemini-3.8-flash", "claude-sonnet-5-5"] },
+      pinned_quota_models: { models: ["gemini-3.8-flash", "claude-opus-4-6-thinking"] },
       network: { proxy_mode: "system", proxy_url: "" },
       quota_valuation: {
         enabled: false, currency: "usd", display_mode: "remaining",

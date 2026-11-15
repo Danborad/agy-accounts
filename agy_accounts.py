@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(BASE_DIR, "web")
@@ -526,7 +526,12 @@ def token_label(raw: Optional[bytes]) -> str:
 # 额度查询（CloudCode API）
 # ---------------------------------------------------------------------------
 
-CLOUDCODE_BASE = "https://daily-cloudcode-pa.googleapis.com"
+CLOUDCODE_BASES = [
+    "https://cloudcode-pa.googleapis.com",
+    "https://daily-cloudcode-pa.googleapis.com",
+    "https://daily-cloudcode-pa.sandbox.googleapis.com",
+]
+CLOUDCODE_BASE = CLOUDCODE_BASES[0]
 OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 QUOTA_USER_AGENT = "antigravity/1.2.9"
 
@@ -607,7 +612,36 @@ def _tier_label(load_code: Dict[str, Any]) -> str:
     return str(current.get("name") or "未知")
 
 
-def normalize_quota(load_code: Dict[str, Any], summary: Dict[str, Any]) -> Dict[str, Any]:
+def normalize_models(raw_models: Any) -> List[Dict[str, Any]]:
+    models: List[Dict[str, Any]] = []
+    if not isinstance(raw_models, dict):
+        return models
+    for name, info in raw_models.items():
+        if not isinstance(info, dict):
+            continue
+        low = str(name).lower()
+        if not low.startswith(("gemini", "claude", "gpt", "image", "imagen")):
+            continue
+        quota = info.get("quotaInfo") if isinstance(info.get("quotaInfo"), dict) else {}
+        try:
+            fraction = float(quota.get("remainingFraction"))
+        except (TypeError, ValueError):
+            continue
+        fraction = min(1.0, max(0.0, fraction))
+        models.append({
+            "name": str(name),
+            "display_name": str(info.get("displayName") or name),
+            "percentage": round(fraction * 100, 1),
+            "remaining": round(fraction, 4),
+            "reset": str(quota.get("resetTime") or ""),
+            "supports_images": bool(info.get("supportsImages")),
+            "supports_thinking": bool(info.get("supportsThinking")),
+        })
+    return models
+
+
+def normalize_quota(load_code: Dict[str, Any], summary: Dict[str, Any],
+                    models: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     groups: List[Dict[str, Any]] = []
     raw_groups = summary.get("groups") if isinstance(summary.get("groups"), list) else []
     for group in raw_groups:
@@ -635,7 +669,7 @@ def normalize_quota(load_code: Dict[str, Any], summary: Dict[str, Any]) -> Dict[
                 "disabled": "does not currently apply" in str(bucket.get("description") or "").lower(),
             }
         groups.append({"key": key, "label": label or key.title(), "windows": windows})
-    return {"tier": _tier_label(load_code), "groups": groups}
+    return {"tier": _tier_label(load_code), "groups": groups, "models": models or []}
 
 
 def _post_json(url: str, payload: Dict[str, Any], access_token: str,
@@ -663,25 +697,47 @@ def _post_json(url: str, payload: Dict[str, Any], access_token: str,
 
 
 def fetch_quota_payload(access_token: str, timeout: int) -> Dict[str, Any]:
-    load_code = _post_json(CLOUDCODE_BASE + "/v1internal:loadCodeAssist", {
-        "metadata": {"ideType": "ANTIGRAVITY", "pluginType": "GEMINI"},
-    }, access_token, timeout)
-    summary: Dict[str, Any] = {}
+    """按原版顺序取：生产端点优先，逐模型额度 + 分组额度 + 套餐。"""
+    load_code: Dict[str, Any] = {}
     last_error: Optional[QuotaError] = None
-    for attempt in range(2):
+    for base in CLOUDCODE_BASES:
         try:
-            summary = _post_json(CLOUDCODE_BASE + "/v1internal:retrieveUserQuotaSummary",
-                                 {}, access_token, timeout)
+            load_code = _post_json(base + "/v1internal:loadCodeAssist", {
+                "metadata": {"ideType": "ANTIGRAVITY"},
+            }, access_token, timeout)
             last_error = None
             break
         except QuotaError as exc:
             last_error = exc
-            if exc.unauthorized or attempt:
-                break
-            time.sleep(0.8)
+            if exc.unauthorized:
+                raise
     if last_error is not None:
         raise last_error
-    return normalize_quota(load_code, summary)
+
+    raw_models: Dict[str, Any] = {}
+    for base in CLOUDCODE_BASES:
+        try:
+            data = _post_json(base + "/v1internal:fetchAvailableModels", {},
+                              access_token, timeout)
+            if isinstance(data.get("models"), dict) and data["models"]:
+                raw_models = data["models"]
+                break
+        except QuotaError:
+            continue
+
+    summary: Dict[str, Any] = {}
+    for base in CLOUDCODE_BASES:
+        for payload in ({"project": "aicode-consumers"}, {}):
+            try:
+                summary = _post_json(base + "/v1internal:retrieveUserQuotaSummary",
+                                     payload, access_token, timeout)
+                break
+            except QuotaError:
+                summary = {}
+        if summary.get("groups"):
+            break
+
+    return normalize_quota(load_code, summary, normalize_models(raw_models))
 
 
 def _post_form(url: str, data: bytes, timeout: int) -> Optional[Dict[str, Any]]:
@@ -721,13 +777,13 @@ class QuotaManager:
         self._cache: Dict[str, Any] = {}
         stored = read_json(self.cache_path)
         accounts = stored.get("accounts")
-        if isinstance(accounts, dict):
+        if stored.get("version") == 2 and isinstance(accounts, dict):
             self._cache = accounts
 
     # -- 缓存 ------------------------------------------------------------
 
     def _save_cache(self) -> None:
-        write_json_atomic(self.cache_path, {"version": 1, "accounts": self._cache}, 0o600)
+        write_json_atomic(self.cache_path, {"version": 2, "accounts": self._cache}, 0o600)
 
     def _cached(self, account_id: str) -> Optional[Dict[str, Any]]:
         entry = self._cache.get(account_id)
