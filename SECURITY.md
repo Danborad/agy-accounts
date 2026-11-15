@@ -27,6 +27,8 @@
 ~/.gemini/jetski-standalone-oauth-token
 ~/.local/share/agy-accounts/accounts/*/token
 ~/.config/agy-accounts/secret.key
+~/.config/agy-accounts/quota-cache.json
+~/.config/agy-accounts/oauth-client.json
 ```
 
 要求：
@@ -34,6 +36,12 @@
 - 权限分别为 `0600`、`0600`、`0600`，目录 `0700`
 - 不提交版本库、不打包分享、不放公开网盘
 - 迁移时使用 `scp` / `rsync` 并保留权限
+
+## 额度查询
+
+额度查询会用快照中的 `refresh_token` 向 Google 换新的 `access_token`。所用客户端凭据是 Antigravity 安装型应用的公开凭据（Google 明确说明安装型应用密钥不属于机密），不是用户凭据。刷新结果只写入对应快照；若该快照是当前账号，则同步线上令牌，并与切换事务共用锁。
+
+额度缓存 `quota-cache.json` 只包含套餐、比例、重置时间和缓存键，不含令牌。
 
 ## 已实现的控制
 

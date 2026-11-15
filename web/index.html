@@ -177,6 +177,38 @@
     .card-name { font-weight: 650; font-size: 14.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .card-email { color: var(--muted); font-size: 12.5px; word-break: break-all; margin-top: 1px; }
     .card-meta { color: var(--faint); font-size: 11.5px; margin-top: 4px; }
+    .quota-slot {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px;
+    }
+    .quota-cell {
+      flex: 1 1 158px; min-width: 140px; padding: 8px 10px;
+      background: #0d1622; border: 1px solid var(--line-soft); border-radius: 10px;
+    }
+    .q-top {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+      font-size: 11px; color: var(--muted);
+    }
+    .q-model { font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .q-pct { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text); }
+    .q-bar { height: 5px; background: #1b2838; border-radius: 999px; overflow: hidden; margin: 6px 0 5px; }
+    .q-bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2fb8a0, #55d6be); }
+    .q-bar i.low { background: linear-gradient(90deg, #c99345, #e7b567); }
+    .q-bar i.crit { background: linear-gradient(90deg, #d95a50, #f0736a); }
+    .q-sub { font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .quota-loading, .quota-error, .quota-note {
+      font-size: 11.5px; color: var(--faint); padding: 3px 1px; flex-basis: 100%;
+    }
+    .quota-error { color: var(--warn); }
+    .quota-error span { color: var(--faint); margin-left: 6px; }
+    .tier-tag {
+      font-size: 10px; font-weight: 700; letter-spacing: .03em;
+      padding: 2px 7px; border-radius: 999px; vertical-align: middle;
+      background: rgba(78, 124, 255, .14); color: #9db8ff;
+      border: 1px solid rgba(78, 124, 255, .32);
+    }
+    .tier-tag.pro { background: rgba(85, 214, 190, .14); color: var(--accent); border-color: rgba(85, 214, 190, .32); }
+    .tier-tag.ultra { background: rgba(231, 181, 103, .15); color: var(--warn); border-color: rgba(231, 181, 103, .34); }
+    .quota-note { color: var(--warn); }
     .tag {
       font-size: 10.5px; font-weight: 700; letter-spacing: .04em;
       padding: 2px 7px; border-radius: 999px;
@@ -371,6 +403,9 @@
       var busytimer = null;
       var overlayTimer = null;
       var refreshTimer = null;
+      var quotas = null;
+      var lastQuotaAt = 0;
+      var quotaLoading = false;
 
       var $ = function (id) { return document.getElementById(id); };
 
@@ -490,6 +525,102 @@
         return "服务状态未知";
       }
 
+      function fmtReset(iso) {
+        if (!iso) return "";
+        var date = new Date(iso);
+        if (isNaN(date.getTime())) return "";
+        return date.toLocaleString("zh-CN", {
+          month: "numeric", day: "numeric",
+          hour: "2-digit", minute: "2-digit", hour12: false
+        });
+      }
+
+      function quotaHtml(q) {
+        if (!q) return '<div class="quota-loading">额度查询中…</div>';
+        if (q.status === "error") {
+          return '<div class="quota-error">额度暂不可用<span>' +
+            esc(q.error || "查询失败") + '</span></div>';
+        }
+        var groups = q.groups || [];
+        var html = "";
+        groups.forEach(function (group) {
+          ["5h", "weekly"].forEach(function (window) {
+            var bucket = group.windows && group.windows[window];
+            if (!bucket) return;
+            var pct = Math.round(Number(bucket.remaining) * 100);
+            var level = pct < 20 ? "crit" : (pct < 60 ? "low" : "");
+            var label = group.key === "claude" ? "Claude / GPT"
+              : (group.key === "gemini" ? "Gemini" : (group.label || "模型"));
+            var windowLabel = window === "5h" ? "5 小时" : "本周";
+            var reset = fmtReset(bucket.reset);
+            var sub = bucket.disabled ? "当前不适用"
+              : ("剩余 " + pct + "%" + (reset ? " · " + reset + " 重置" : ""));
+            html += '<div class="quota-cell">' +
+              '<div class="q-top"><span class="q-model">' + esc(label) + " · " +
+                windowLabel + '</span><span class="q-pct">' + pct + '%</span></div>' +
+              '<div class="q-bar"><i class="' + level + '" style="width:' +
+                Math.max(0, Math.min(100, pct)) + '%"></i></div>' +
+              '<div class="q-sub" title="' + esc(sub) + '">' + esc(sub) + '</div>' +
+            '</div>';
+          });
+        });
+        if (!html) html = '<div class="quota-error">接口未返回额度<span>请稍后刷新</span></div>';
+        if (q.status === "stale") {
+          html += '<div class="quota-note">显示缓存额度：' + esc(q.error || "刷新失败") + '</div>';
+        }
+        return html;
+      }
+
+      function renderQuotas() {
+        document.querySelectorAll("[data-quota-for]").forEach(function (slot) {
+          var id = slot.getAttribute("data-quota-for");
+          slot.innerHTML = quotaHtml(quotas ? quotas[id] : null);
+        });
+        document.querySelectorAll("[data-tier-for]").forEach(function (tag) {
+          var id = tag.getAttribute("data-tier-for");
+          var quota = quotas ? quotas[id] : null;
+          if (quota && quota.tier) {
+            tag.hidden = false;
+            tag.textContent = quota.tier;
+            tag.className = "tier-tag " + String(quota.tier).toLowerCase();
+          } else {
+            tag.hidden = true;
+          }
+        });
+        var heroTag = $("currentTier");
+        if (heroTag) {
+          var currentQuota = (quotas && state && state.current) ? quotas[state.current] : null;
+          if (currentQuota && currentQuota.tier) {
+            heroTag.hidden = false;
+            heroTag.textContent = currentQuota.tier;
+            heroTag.className = "tier-tag " + String(currentQuota.tier).toLowerCase();
+          } else {
+            heroTag.hidden = true;
+          }
+        }
+      }
+
+      function loadQuotas(force) {
+        if (quotaLoading) return Promise.resolve();
+        quotaLoading = true;
+        if (!quotas) renderQuotas();
+        return api("/api/quotas" + (force ? "?refresh=1" : ""))
+          .then(function (data) {
+            quotas = data.quotas || {};
+            lastQuotaAt = Date.now();
+            renderQuotas();
+          }).catch(function (err) {
+            if (err && err.status !== 401) toast("额度查询失败：" + err.message, "error");
+          }).finally(function () {
+            quotaLoading = false;
+          });
+      }
+
+      function maybeLoadQuotas() {
+        if (!quotas || Date.now() - lastQuotaAt > 60000) loadQuotas(false);
+        else renderQuotas();
+      }
+
       function render(data) {
         state = data;
         $("versionText").textContent = "agy-accounts v" + (data.version || "1.0.0");
@@ -513,6 +644,7 @@
           $("currentEmail").textContent = current.email || "未识别邮箱";
           $("currentRow").innerHTML =
             '<span class="pill-current">● 已保存的当前账号</span>' +
+            '<span class="tier-tag" id="currentTier" hidden></span>' +
             '<small title="' + esc(absoluteTime(current.last_used_at)) + '">上次使用：' +
             esc(relativeTime(current.last_used_at)) + '</small>';
         } else if (data.token_present) {
@@ -547,11 +679,15 @@
           return '<article class="card' + (account.is_current ? " current" : "") + '">' +
             '<div class="avatar">' + esc(initial) + '</div>' +
             '<div class="card-main">' +
-              '<div class="card-name">' + esc(account.name) + currentTag + '</div>' +
+              '<div class="card-name">' + esc(account.name) + currentTag +
+                '<span class="tier-tag" data-tier-for="' + esc(account.id) + '" hidden></span></div>' +
               '<div class="card-email">' + esc(account.email || "未识别邮箱") + '</div>' +
               '<div class="card-meta" title="创建：' + esc(absoluteTime(account.created_at)) +
                 '，上次使用：' + esc(absoluteTime(account.last_used_at)) + '">' +
                 '上次使用：' + esc(relativeTime(account.last_used_at)) +
+              '</div>' +
+              '<div class="quota-slot" data-quota-for="' + esc(account.id) + '">' +
+                '<div class="quota-loading">额度查询中…</div>' +
               '</div>' +
             '</div>' +
             '<div class="card-actions">' + switchBtn +
@@ -577,12 +713,14 @@
         }
 
         $("openAppBtn").disabled = !data.app_url;
+        renderQuotas();
       }
 
       function refresh(silent) {
         return api("/api/status").then(function (data) {
           if ($("loginView").hidden === false) showPanel();
           render(data);
+          maybeLoadQuotas();
           if (!silent) toast("已刷新", "success");
         }).catch(function (err) {
           if (err && err.status !== 401 && !silent) toast(err.message, "error");
@@ -621,7 +759,7 @@
           .then(function (data) {
             $("saveName").value = "";
             toast("已保存「" + data.account.name + "」", "success");
-            return refresh(true);
+            return refresh(true).then(function () { return loadQuotas(true); });
           }).catch(function (err) {
             toast(err.message, "error");
           }).finally(function () {
@@ -705,7 +843,9 @@
 
       $("loginForm").addEventListener("submit", doLogin);
       $("saveForm").addEventListener("submit", saveAccount);
-      $("refreshBtn").addEventListener("click", function () { refresh(false); });
+      $("refreshBtn").addEventListener("click", function () {
+        refresh(false).then(function () { return loadQuotas(true); });
+      });
       $("logoutBtn").addEventListener("click", logout);
       $("openAppBtn").addEventListener("click", function () {
         if (state && state.app_url) window.location.href = state.app_url;
@@ -729,6 +869,7 @@
       api("/api/status").then(function (data) {
         showPanel();
         render(data);
+        maybeLoadQuotas();
       }).catch(function () {
         showLogin();
       });

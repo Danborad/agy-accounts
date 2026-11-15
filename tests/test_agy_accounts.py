@@ -379,6 +379,43 @@ class PanelTest(unittest.TestCase):
             "plain@example.com")
         self.assertEqual(agy_accounts.extract_email(b"not a token"), "")
 
+    def test_quota_normalization(self):
+        load = {"paidTier": {"id": "g1-pro-tier", "name": "Pro"}}
+        summary = {"groups": [{
+            "displayName": "Claude and GPT models",
+            "buckets": [
+                {"window": "5h", "remainingFraction": 0.42,
+                 "resetTime": "2026-11-16T12:00:00Z"},
+                {"window": "weekly", "remainingFraction": 1.4,
+                 "resetTime": "2026-11-22T12:00:00Z",
+                 "description": "weekly limit does not currently apply"},
+                {"window": "monthly", "remainingFraction": 0.1},
+            ],
+        }]}
+        quota = agy_accounts.normalize_quota(load, summary)
+        self.assertEqual(quota["tier"], "Pro")
+        self.assertEqual(quota["groups"][0]["key"], "claude")
+        self.assertEqual(quota["groups"][0]["windows"]["5h"]["remaining"], 0.42)
+        self.assertEqual(quota["groups"][0]["windows"]["weekly"]["remaining"], 1.0)
+        self.assertTrue(quota["groups"][0]["windows"]["weekly"]["disabled"])
+        self.assertNotIn("monthly", quota["groups"][0]["windows"])
+
+    def test_quota_cache_key_ignores_access_token(self):
+        first = b'{"token":{"refresh_token":"rt","access_token":"a1"}}'
+        second = b'{"token":{"refresh_token":"rt","access_token":"a2"}}'
+        self.assertEqual(agy_accounts.cache_key(first), agy_accounts.cache_key(second))
+        self.assertNotEqual(agy_accounts.cache_key(first),
+                            agy_accounts.cache_key(b'{"token":{"refresh_token":"other"}}'))
+
+    def test_parse_expiry_nanoseconds(self):
+        stamp = agy_accounts.parse_expiry("2026-11-15T17:54:10.268688727Z")
+        self.assertGreater(stamp, 1_700_000_000)
+        self.assertEqual(agy_accounts.parse_expiry(""), 0.0)
+
+    def test_quota_endpoint_requires_auth(self):
+        status, data, _ = self.request("GET", "/api/quotas", auth=False)
+        self.assertEqual(status, 401)
+
     def test_slugify_keeps_chinese(self):
         self.assertEqual(agy_accounts.slugify("主账号 A"), "主账号-a")
         self.assertEqual(agy_accounts.slugify("///"), "account")

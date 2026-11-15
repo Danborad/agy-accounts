@@ -7,7 +7,7 @@
 > 本项目不是 `agy-server` 的替代品，也不修改它。`agy-server` 负责网页界面与鉴权，本面板只管理 `language_server` 使用的 OAuth 令牌文件。
 
 <div align="center">
-  <img src="docs/assets/panel-desktop.png" width="540" alt="桌面端账号面板">
+  <img src="docs/assets/panel-quota.png" width="540" alt="桌面端账号面板与额度">
   <img src="docs/assets/panel-mobile.png" width="210" alt="手机端账号面板">
 </div>
 
@@ -69,6 +69,8 @@ Antigravity 在机器上的状态分三层：
 - 共享密码登录，PBKDF2 哈希存储，常量时间比较
 - 账号卡片列表：名称、邮箱、当前标记、上次使用时间
 - 当前账号判定：令牌字节一致，或 `refresh_token` 相同（应对 access_token 轮换）
+- 每个已保存账号的套餐（Free / Pro / Ultra / Standard）与额度
+- 5 小时 / 每周额度条、剩余百分比与重置时间
 - 保存当前登录为命名快照（自动识别邮箱）
 - 一键切换：停止 → 替换 → 启动 → 探测，全程串行
 - 失败自动回滚：任何一步出错都恢复原令牌并尽量拉起服务
@@ -192,6 +194,9 @@ python3 agy_accounts.py serve
 | `cookie_secure` | `false` | 走 HTTPS 反代时设为 `true` |
 | `probe_timeout` | `30` | 等待服务就绪的最长秒数 |
 | `command_timeout` | `30` | 单条启停命令超时 |
+| `language_server_path` | `/opt/agy-server/language_server` | 用于提取安装型 OAuth 客户端公开凭据，仅额度刷新时使用 |
+| `quota_ttl` | `300` | 额度缓存秒数 |
+| `quota_timeout` | `12` | 额度接口单次请求超时秒数 |
 | `stop_timeout` | `20` | 等待进程退出的最长秒数 |
 | `login_max_failures` | `5` | 登录失败次数上限（按 IP） |
 | `login_window` | `300` | 失败计数窗口（秒） |
@@ -250,6 +255,7 @@ python3 agy_accounts.py --version
 | `POST` | `/api/login` | `{"password":"..."}`，成功返回会话 Cookie |
 | `POST` | `/api/logout` | 清除会话 |
 | `GET` | `/api/status` | 账号列表、当前标记、服务状态、切换状态 |
+| `GET` | `/api/quotas` | 各账号套餐与额度；`?refresh=1` 强制刷新 |
 | `POST` | `/api/accounts` | `{"name":"..."}` 保存当前登录 |
 | `POST` | `/api/accounts/{id}/switch` | 切换账号 |
 | `POST` | `/api/accounts/{id}/rename` | `{"name":"..."}` 改显示名 |
@@ -273,6 +279,23 @@ python3 agy_accounts.py --version
 - 快照目录等同凭据库：`.gitignore` 已排除，不要提交或打包分享
 
 > 不要将面板密码分享给多人。建议只在自己控制的机器与私有网络内使用；如需远程访问，放在 Tailscale 等私有网络之后，或再加一层带密码的反向代理。
+
+## 额度显示
+
+面板会为每个**已保存的快照**查询 Antigravity 的 CloudCode 配额接口，显示：
+
+- 套餐等级：Free / Pro / Ultra / Standard
+- Claude / GPT 与 Gemini 的 5 小时、每周剩余比例
+- 重置时间，以及“当前不适用”的桶
+
+额度请求使用快照自己的 `access_token`；快照过期时会用 `refresh_token` 刷新并写回快照。若该账号正是当前登录，刷新后的令牌也会同步到线上令牌文件（与切换事务互斥，避免交叉写入）。结果缓存 `quota_ttl` 秒（默认 5 分钟），页面上的“刷新”会强制重查。
+
+说明：
+
+- 只查询已保存的账号；未保存的当前登录不会出现在额度列表里。
+- 需要服务器能访问 `daily-cloudcode-pa.googleapis.com` 与 `oauth2.googleapis.com`。
+- 刷新使用 Antigravity 安装型 OAuth 客户端的公开凭据（Google 说明安装型应用密钥不属于机密），优先从 `language_server` 提取，并内置一份兼容回退。
+- 查询失败不会影响账号保存与切换；卡片会显示“额度暂不可用”或上一次缓存。
 
 ## 故障排查
 
@@ -320,6 +343,7 @@ python3 -m unittest discover -s tests -v
 - 保存快照、拒绝重复保存
 - 切换账号、已当前账号不重启
 - 令牌轮换回写：线上令牌刷新后自动同步到对应快照
+- 额度查询：按账号调用 CloudCode API，缓存 5 分钟，支持手动强制刷新
 - 启动失败自动回滚
 - 停止失败不触碰令牌
 - 重命名、删除、路径穿越拒绝

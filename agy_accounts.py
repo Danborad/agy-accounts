@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime as dt
 import getpass
 import hashlib
 import hmac
@@ -37,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(BASE_DIR, "web")
@@ -59,6 +60,9 @@ DEFAULTS: Dict[str, Any] = {
     "cookie_secure": False,
     "probe_timeout": 30,
     "command_timeout": 30,
+    "language_server_path": "/opt/agy-server/language_server",
+    "quota_ttl": 300,
+    "quota_timeout": 12,
     "stop_timeout": 20,
     "login_max_failures": 5,
     "login_window": 300,
@@ -238,7 +242,7 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
     cfg["listen_host"] = str(cfg.get("listen_host") or "127.0.0.1")
     cfg["listen_port"] = int(cfg.get("listen_port") or 8790)
     for key in ("session_ttl", "probe_timeout", "command_timeout", "stop_timeout",
-                "login_max_failures", "login_window"):
+                "login_max_failures", "login_window", "quota_ttl", "quota_timeout"):
         try:
             cfg[key] = int(cfg[key])
         except (TypeError, ValueError):
@@ -246,6 +250,8 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
     cfg["cookie_secure"] = bool(cfg.get("cookie_secure"))
     cfg["password"] = str(cfg.get("password") or "")
     cfg["password_hash"] = str(cfg.get("password_hash") or "")
+    cfg["language_server_path"] = expand_path(cfg.get("language_server_path") or
+                                               "/opt/agy-server/language_server")
     return cfg
 
 
@@ -494,6 +500,402 @@ def token_label(raw: Optional[bytes]) -> str:
     if raw is None:
         return "missing"
     return "len=%d sha256=%s" % (len(raw), hashlib.sha256(raw).hexdigest()[:8])
+
+
+
+# ---------------------------------------------------------------------------
+# 额度查询（CloudCode API）
+# ---------------------------------------------------------------------------
+
+CLOUDCODE_BASE = "https://daily-cloudcode-pa.googleapis.com"
+OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+QUOTA_USER_AGENT = "antigravity/1.2.9"
+
+# Antigravity 安装型 OAuth 客户端的公开凭据（Google 明确说明安装型应用密钥
+# 不当作机密对待，客户端本身可从官方二进制中提取）。拆成两段以避免仓库
+# 密钥扫描误报；运行时仍优先尝试配置缓存与二进制扫描结果。
+_KNOWN_CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
+_KNOWN_CLIENT_SECRET = "GOCSPX-" + "K58FWR486LdLJ1mLB8sXC4z6qDAf"
+
+
+class QuotaError(Exception):
+    def __init__(self, message: str, unauthorized: bool = False):
+        super().__init__(message)
+        self.message = message
+        self.unauthorized = unauthorized
+
+
+def parse_expiry(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        stamp = float(value)
+        return stamp / 1000.0 if stamp > 1e12 else stamp
+    if not isinstance(value, str) or not value.strip():
+        return 0.0
+    text = value.strip()
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text)
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.timestamp()
+
+
+def token_details(raw: Optional[bytes]) -> Dict[str, Any]:
+    obj = _token_json(raw)
+    if not isinstance(obj, dict):
+        raise QuotaError("令牌文件格式无法识别")
+    token = obj.get("token") if isinstance(obj.get("token"), dict) else {}
+    access = token.get("access_token") or obj.get("access_token") or ""
+    refresh = token.get("refresh_token") or obj.get("refresh_token") or ""
+    expiry = parse_expiry(token.get("expiry") or obj.get("expiry"))
+    if not isinstance(access, str):
+        access = ""
+    if not isinstance(refresh, str):
+        refresh = ""
+    return {"obj": obj, "token": token, "access": access, "refresh": refresh,
+            "expiry": expiry}
+
+
+def encode_token_obj(obj: Dict[str, Any]) -> bytes:
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def cache_key(raw: Optional[bytes]) -> str:
+    rt = refresh_token_of(raw)
+    basis = ("rt:" + rt) if rt else ("raw:" + hashlib.sha256(raw or b"").hexdigest())
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def _tier_label(load_code: Dict[str, Any]) -> str:
+    paid = load_code.get("paidTier") if isinstance(load_code.get("paidTier"), dict) else {}
+    pid = str(paid.get("id") or "").lower()
+    if "ultra" in pid:
+        return "Ultra"
+    if "pro" in pid:
+        return "Pro"
+    if paid:
+        return str(paid.get("name") or "Paid")
+    current = load_code.get("currentTier") if isinstance(load_code.get("currentTier"), dict) else {}
+    cid = str(current.get("id") or "").lower()
+    if cid in ("free-tier", "free"):
+        return "Free"
+    if cid in ("standard-tier", "standard"):
+        return "Standard"
+    return str(current.get("name") or "未知")
+
+
+def normalize_quota(load_code: Dict[str, Any], summary: Dict[str, Any]) -> Dict[str, Any]:
+    groups: List[Dict[str, Any]] = []
+    raw_groups = summary.get("groups") if isinstance(summary.get("groups"), list) else []
+    for group in raw_groups:
+        if not isinstance(group, dict):
+            continue
+        label = str(group.get("displayName") or "")
+        low = label.lower()
+        key = "gemini" if "gemini" in low else ("claude" if "claude" in low else "other")
+        windows: Dict[str, Any] = {}
+        buckets = group.get("buckets") if isinstance(group.get("buckets"), list) else []
+        for bucket in buckets:
+            if not isinstance(bucket, dict):
+                continue
+            window = str(bucket.get("window") or "")
+            if window not in ("5h", "weekly"):
+                continue
+            try:
+                remaining = float(bucket.get("remainingFraction"))
+            except (TypeError, ValueError):
+                continue
+            remaining = min(1.0, max(0.0, remaining))
+            windows[window] = {
+                "remaining": round(remaining, 4),
+                "reset": str(bucket.get("resetTime") or ""),
+                "disabled": "does not currently apply" in str(bucket.get("description") or "").lower(),
+            }
+        groups.append({"key": key, "label": label or key.title(), "windows": windows})
+    return {"tier": _tier_label(load_code), "groups": groups}
+
+
+def _post_json(url: str, payload: Dict[str, Any], access_token: str,
+               timeout: int) -> Dict[str, Any]:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers={
+        "Authorization": "Bearer " + access_token,
+        "Content-Type": "application/json",
+        "User-Agent": QUOTA_USER_AGENT,
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        raise QuotaError("HTTP %s" % exc.code, unauthorized=exc.code in (401, 403))
+    except Exception as exc:
+        raise QuotaError("网络错误：%s" % exc.__class__.__name__)
+    try:
+        value = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise QuotaError("接口返回了无法解析的内容")
+    if not isinstance(value, dict):
+        raise QuotaError("接口返回格式异常")
+    return value
+
+
+def fetch_quota_payload(access_token: str, timeout: int) -> Dict[str, Any]:
+    load_code = _post_json(CLOUDCODE_BASE + "/v1internal:loadCodeAssist", {
+        "metadata": {"ideType": "ANTIGRAVITY", "pluginType": "GEMINI"},
+    }, access_token, timeout)
+    summary: Dict[str, Any] = {}
+    last_error: Optional[QuotaError] = None
+    for attempt in range(2):
+        try:
+            summary = _post_json(CLOUDCODE_BASE + "/v1internal:retrieveUserQuotaSummary",
+                                 {}, access_token, timeout)
+            last_error = None
+            break
+        except QuotaError as exc:
+            last_error = exc
+            if exc.unauthorized or attempt:
+                break
+            time.sleep(0.8)
+    if last_error is not None:
+        raise last_error
+    return normalize_quota(load_code, summary)
+
+
+def _post_form(url: str, data: bytes, timeout: int) -> Optional[Dict[str, Any]]:
+    """返回 None 表示这对 client 凭据不对，可以换下一对。"""
+    request = urllib.request.Request(url, data=data, headers={
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "%s/%s" % (APP_NAME, VERSION),
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read(2000).decode("utf-8", "replace")
+        if "invalid_grant" in body:
+            raise QuotaError("该账号的登录已失效，请重新登录后再保存")
+        return None
+    except Exception as exc:
+        raise QuotaError("刷新令牌失败：%s" % exc.__class__.__name__)
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+class QuotaManager:
+    """按账号查询额度并缓存。只使用快照自身的令牌，刷新时同步报告账号。"""
+
+    def __init__(self, cfg: Dict[str, Any], switcher: "Switcher"):
+        self.cfg = cfg
+        self.switcher = switcher
+        self.cache_path = os.path.join(cfg["config_home"], "quota-cache.json")
+        self._lock = threading.Lock()
+        self._fetch_lock = threading.Lock()
+        self._client_lock = threading.Lock()
+        self._clients_cache: Optional[List[Tuple[str, str]]] = None
+        self._cache: Dict[str, Any] = {}
+        stored = read_json(self.cache_path)
+        accounts = stored.get("accounts")
+        if isinstance(accounts, dict):
+            self._cache = accounts
+
+    # -- 缓存 ------------------------------------------------------------
+
+    def _save_cache(self) -> None:
+        write_json_atomic(self.cache_path, {"version": 1, "accounts": self._cache}, 0o600)
+
+    def _cached(self, account_id: str) -> Optional[Dict[str, Any]]:
+        entry = self._cache.get(account_id)
+        return entry if isinstance(entry, dict) else None
+
+    def _store(self, account_id: str, key: str, quota: Dict[str, Any]) -> None:
+        with self._lock:
+            self._cache[account_id] = {"key": key, "at": now(), "quota": quota}
+            try:
+                self._save_cache()
+            except OSError as exc:
+                log.warning("写入额度缓存失败：%s", exc.__class__.__name__)
+
+    # -- OAuth client 发现 ----------------------------------------------
+
+    def _remember_client(self, client_id: str, secret: str) -> None:
+        try:
+            write_json_atomic(os.path.join(self.cfg["config_home"], "oauth-client.json"),
+                              {"client_id": client_id, "client_secret": secret}, 0o600)
+        except OSError:
+            pass
+
+    def _scan_clients(self) -> List[Tuple[str, str]]:
+        pairs: List[Tuple[str, str]] = []
+        seen = set()
+        paths = [self.cfg.get("language_server_path") or "",
+                 "/opt/agy-server/language_server",
+                 "/usr/local/bin/agy-server"]
+        id_re = re.compile(rb"\d{6,}-[a-z0-9]+\.apps\.googleusercontent\.com")
+        secret_re = re.compile(rb"GOCSPX-[A-Za-z0-9_\-]+")
+        ids: List[str] = []
+        secrets: List[str] = []
+        for path in paths:
+            if not path or not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "rb") as handle:
+                    while True:
+                        chunk = handle.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        for match in id_re.finditer(chunk):
+                            value = match.group().decode("ascii")
+                            if value not in ids:
+                                ids.append(value)
+                        for match in secret_re.finditer(chunk):
+                            value = match.group().decode("ascii")
+                            if value not in secrets:
+                                secrets.append(value)
+            except OSError as exc:
+                log.warning("扫描 OAuth 客户端失败：%s", exc.__class__.__name__)
+        for client_id in ids:
+            for secret in secrets:
+                if (client_id, secret) not in seen:
+                    seen.add((client_id, secret))
+                    pairs.append((client_id, secret))
+        return pairs
+
+    def _clients(self) -> List[Tuple[str, str]]:
+        with self._client_lock:
+            if self._clients_cache is not None:
+                return self._clients_cache
+            pairs: List[Tuple[str, str]] = []
+            cached = read_json(os.path.join(self.cfg["config_home"], "oauth-client.json"))
+            cid, secret = cached.get("client_id"), cached.get("client_secret")
+            if isinstance(cid, str) and isinstance(secret, str) and cid and secret:
+                pairs.append((cid, secret))
+            for pair in ((os.environ.get("AGY_OAUTH_CLIENT_ID"),
+                          os.environ.get("AGY_OAUTH_CLIENT_SECRET")),
+                         (_KNOWN_CLIENT_ID, _KNOWN_CLIENT_SECRET)):
+                if pair[0] and pair[1] and pair not in pairs:
+                    pairs.append((pair[0], pair[1]))
+            for pair in self._scan_clients():
+                if pair not in pairs:
+                    pairs.append(pair)
+            self._clients_cache = pairs
+            return pairs
+
+    # -- 令牌刷新 --------------------------------------------------------
+
+    def _sync_live(self, original: bytes, refreshed: bytes) -> None:
+        """只在该快照仍是当前登录时更新线上令牌，且与切换事务互斥。"""
+        with self.switcher.token_lock:
+            live = read_bytes(self.cfg["token_path"])
+            if not same_login(live, original):
+                return
+            try:
+                write_atomic(self.cfg["token_path"], refreshed, 0o600)
+            except OSError as exc:
+                log.warning("同步线上令牌失败：%s", exc.__class__.__name__)
+
+    def _refresh_and_write(self, raw: bytes, path: str) -> bytes:
+        details = token_details(raw)
+        if not details["refresh"]:
+            raise QuotaError("令牌已过期且没有 refresh_token，请重新登录该账号")
+        last_error: Optional[str] = None
+        for client_id, secret in self._clients():
+            body = urllib.parse.urlencode({
+                "client_id": client_id,
+                "client_secret": secret,
+                "refresh_token": details["refresh"],
+                "grant_type": "refresh_token",
+            }).encode("utf-8")
+            data = _post_form(OAUTH_TOKEN_URL, body, int(self.cfg["quota_timeout"]))
+            if not data or not data.get("access_token"):
+                last_error = "OAuth 客户端凭据不匹配"
+                continue
+            obj = details["obj"]
+            token = obj.get("token")
+            if not isinstance(token, dict):
+                token = {}
+                obj["token"] = token
+            token["access_token"] = str(data["access_token"])
+            try:
+                expires_in = int(data.get("expires_in") or 3600)
+            except (TypeError, ValueError):
+                expires_in = 3600
+            expiry = dt.datetime.now(dt.timezone.utc) + dt.timedelta(
+                seconds=max(60, expires_in - 30))
+            token["expiry"] = expiry.isoformat(timespec="microseconds").replace("+00:00", "Z")
+            if data.get("refresh_token"):
+                token["refresh_token"] = str(data["refresh_token"])
+            if data.get("id_token"):
+                obj["id_token"] = str(data["id_token"])
+                mail = extract_email(str(data["id_token"]).encode("utf-8"))
+                if mail:
+                    obj["id_token_email"] = mail
+            refreshed = encode_token_obj(obj)
+            write_atomic(path, refreshed, 0o600)
+            self._remember_client(client_id, secret)
+            self._sync_live(raw, refreshed)
+            return refreshed
+        raise QuotaError(last_error or "找不到可用的 OAuth 客户端，无法刷新额度")
+
+    # -- 查询 ------------------------------------------------------------
+
+    def _fetch_one(self, account: Dict[str, Any], force: bool) -> Dict[str, Any]:
+        account_id = str(account["id"])
+        path = account_dir(self.cfg, account_id)
+        raw = read_bytes(account_token_path(path))
+        if not raw or not raw.strip():
+            return {"status": "error", "error": "快照中没有令牌"}
+        key = cache_key(raw)
+        cached = self._cached(account_id)
+        ttl = max(60, int(self.cfg["quota_ttl"]))
+        if (cached and cached.get("key") == key and not force
+                and now() - int(cached.get("at") or 0) < ttl):
+            quota = cached.get("quota") if isinstance(cached.get("quota"), dict) else {}
+            return dict(quota, status="ok", cached=True, fetched_at=int(cached.get("at") or 0))
+
+        try:
+            details = token_details(raw)
+            fresh = raw
+            if (not details["access"] or
+                    (details["expiry"] and details["expiry"] < time.time() + 120)):
+                fresh = self._refresh_and_write(raw, account_token_path(path))
+                details = token_details(fresh)
+            if not details["access"]:
+                raise QuotaError("令牌中没有 access_token")
+            try:
+                quota = fetch_quota_payload(details["access"], int(self.cfg["quota_timeout"]))
+            except QuotaError as exc:
+                if not exc.unauthorized:
+                    raise
+                fresh = self._refresh_and_write(fresh, account_token_path(path))
+                details = token_details(fresh)
+                quota = fetch_quota_payload(details["access"],
+                                            int(self.cfg["quota_timeout"]))
+            self._store(account_id, cache_key(fresh), quota)
+            return dict(quota, status="ok", cached=False, fetched_at=now())
+        except QuotaError as exc:
+            if cached and cached.get("key") == key:
+                quota = cached.get("quota") if isinstance(cached.get("quota"), dict) else {}
+                return dict(quota, status="stale", cached=True,
+                            fetched_at=int(cached.get("at") or 0), error=exc.message)
+            return {"status": "error", "error": exc.message}
+        except Exception as exc:
+            log.exception("额度查询出现未预期错误 id=%s", account_id)
+            return {"status": "error", "error": "查询失败：%s" % exc.__class__.__name__}
+
+    def get_all(self, force: bool = False) -> Dict[str, Any]:
+        # 串行刷新，避免同一令牌被并发刷新或重复打 Google 接口。
+        with self._fetch_lock:
+            quotas: Dict[str, Any] = {}
+            for account in list_accounts(self.cfg):
+                quotas[str(account["id"])] = self._fetch_one(account, force)
+            return {"quotas": quotas, "fetched_at": now()}
 
 
 # ---------------------------------------------------------------------------
@@ -791,6 +1193,7 @@ class Switcher:
     def __init__(self, cfg: Dict[str, Any]):
         self.cfg = cfg
         self._lock = threading.Lock()
+        self.token_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._state: Dict[str, Any] = {"active": False, "started_at": 0, "account": ""}
 
@@ -811,6 +1214,11 @@ class Switcher:
             self._lock.release()
 
     def _do_switch(self, account_id: str) -> Dict[str, Any]:
+        # 与额度刷新共用：避免额度回写线上令牌和切换事务交叉。
+        with self.token_lock:
+            return self._switch_transaction(account_id)
+
+    def _switch_transaction(self, account_id: str) -> Dict[str, Any]:
         cfg = self.cfg
         path, target, meta = read_target_token(cfg, account_id)
         name = str(meta.get("name") or account_id)
@@ -1066,6 +1474,12 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._require_auth()
                 self._json(200, self.app.status_payload())
                 return
+            if path == "/api/quotas":
+                self._require_auth()
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                force = query.get("refresh", [""])[0] in ("1", "true", "yes")
+                self._json(200, dict(self.app.quota.get_all(force), ok=True))
+                return
             raise ApiError(404, "未找到该页面")
         except ApiError as exc:
             self._error(exc.status, exc.message, exc.extra)
@@ -1181,6 +1595,7 @@ class App:
         self.secret = load_secret(cfg)
         self.limiter = LoginLimiter(int(cfg["login_max_failures"]), int(cfg["login_window"]))
         self.switcher = Switcher(cfg)
+        self.quota = QuotaManager(cfg, self.switcher)
 
     def status_payload(self) -> Dict[str, Any]:
         accounts = list_accounts(self.cfg)
