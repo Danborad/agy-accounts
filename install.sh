@@ -121,6 +121,7 @@ install -d -m 0755 "${PREFIX}/web"
 install -m 0644 "${SRC}"/web/* "${PREFIX}/web/"
 install -m 0644 "${SRC}/config.example.json" "${PREFIX}/config.example.json"
 if [[ -f "${SRC}/LICENSE" ]]; then install -m 0644 "${SRC}/LICENSE" "${PREFIX}/LICENSE"; fi
+if [[ -f "${SRC}/NOTICE" ]]; then install -m 0644 "${SRC}/NOTICE" "${PREFIX}/NOTICE"; fi
 ok "程序文件已复制"
 
 if [[ -n "${PANEL_PASSWORD}" ]]; then

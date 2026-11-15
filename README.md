@@ -361,6 +361,14 @@ python3 -m unittest discover -s tests -v
 
 ## 许可
 
-MIT。见 [LICENSE](LICENSE)。
+本项目采用 **CC BY-NC-SA 4.0**（署名—非商业性使用—相同方式共享 4.0 国际）。
+
+- 允许个人使用、修改与非商业分享
+- 必须署名、保留许可证声明，并说明修改内容
+- 修改后的衍生作品必须使用相同许可证
+- **不得用于商业目的**
+- 完整法律文本见 [LICENSE](LICENSE)，版权与署名信息见 [NOTICE](NOTICE)
+
+> 说明：Creative Commons 官方并不建议将 CC 许可用于软件，因为其缺少专利授权与源代码分发条款。本项目按项目所有者的要求采用该许可；如需商业使用，请另行取得授权。
 
 与 Google、AFSlayer/antigravity-server 及上述社区项目均无隶属关系，仅为个人自托管的组合方案。
