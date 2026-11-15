@@ -151,6 +151,28 @@
     }
     .hero small { color: var(--faint); font-size: 12px; }
 
+    .stats {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px; margin: 0 0 24px;
+    }
+    .stat {
+      padding: 13px 15px; border-radius: 13px;
+      background: var(--card); border: 1px solid var(--line-soft);
+      min-width: 0;
+    }
+    .stat-label { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+    .stat-value {
+      margin-top: 5px; font-size: 22px; font-weight: 700; letter-spacing: -.01em;
+      font-variant-numeric: tabular-nums; line-height: 1.2;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .stat-value.small { font-size: 17px; }
+    .stat-value.low { color: var(--warn); }
+    .stat-value.crit { color: var(--danger); }
+    .stat-sub {
+      margin-top: 3px; font-size: 10.5px; color: var(--faint);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     .section-head {
       display: flex; align-items: baseline; gap: 10px; margin: 26px 2px 12px;
     }
@@ -194,7 +216,15 @@
     .q-bar i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2fb8a0, #55d6be); }
     .q-bar i.low { background: linear-gradient(90deg, #c99345, #e7b567); }
     .q-bar i.crit { background: linear-gradient(90deg, #d95a50, #f0736a); }
-    .q-sub { font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .q-sub {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 10.5px; color: var(--faint);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .q-window {
+      flex: 0 0 auto; padding: 1px 5px; border-radius: 4px;
+      background: #16233a; color: #9db8ff; font-size: 9.5px; font-weight: 700;
+    }
     .quota-loading, .quota-error, .quota-note {
       font-size: 11.5px; color: var(--faint); padding: 3px 1px; flex-basis: 100%;
     }
@@ -207,6 +237,8 @@
       border: 1px solid rgba(78, 124, 255, .32);
     }
     .tier-tag.pro { background: rgba(85, 214, 190, .14); color: var(--accent); border-color: rgba(85, 214, 190, .32); }
+    .tier-tag.free { background: rgba(143, 162, 187, .12); color: var(--muted); border-color: rgba(143, 162, 187, .25); }
+    .tier-tag.standard { background: rgba(78, 124, 255, .14); color: #9db8ff; border-color: rgba(78, 124, 255, .32); }
     .tier-tag.ultra { background: rgba(231, 181, 103, .15); color: var(--warn); border-color: rgba(231, 181, 103, .34); }
     .quota-note { color: var(--warn); }
     .tag {
@@ -289,6 +321,7 @@
       .card-actions { width: 100%; justify-content: flex-start; padding-left: 56px; margin-top: -2px; }
       .card-actions .btn { flex: 1 1 auto; }
       .save-row { flex-direction: column; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .kv { grid-template-columns: 1fr; gap: 2px; }
       .kv dd { margin-bottom: 7px; }
       .topbar .chip span.chip-label { display: none; }
@@ -343,11 +376,35 @@
         <div class="hero-row" id="currentRow"></div>
       </section>
 
+      <section class="stats" id="statsStrip" hidden>
+        <div class="stat">
+          <div class="stat-label">已保存账号</div>
+          <div class="stat-value" id="statAccounts">—</div>
+          <div class="stat-sub" id="statAccountsSub">个快照</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">当前套餐</div>
+          <div class="stat-value small" id="statTier">—</div>
+          <div class="stat-sub" id="statTierSub">Google Antigravity</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">5 小时最低剩余</div>
+          <div class="stat-value" id="stat5h">—</div>
+          <div class="stat-sub" id="stat5hSub">所有账号</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">本周最低剩余</div>
+          <div class="stat-value" id="statWeekly">—</div>
+          <div class="stat-sub" id="statWeeklySub">所有账号</div>
+        </div>
+      </section>
+
       <div class="section-head">
         <h3>账号快照</h3>
         <span class="count" id="accountCount"></span>
+        <span class="count" id="quotaUpdated"></span>
         <span class="spacer"></span>
-        <button class="btn btn-ghost btn-sm" id="refreshBtn" type="button">刷新</button>
+        <button class="btn btn-ghost btn-sm" id="refreshBtn" type="button" title="同时刷新账号状态与额度">刷新</button>
       </div>
 
       <div id="accountList" class="cards"></div>
@@ -553,14 +610,19 @@
               : (group.key === "gemini" ? "Gemini" : (group.label || "模型"));
             var windowLabel = window === "5h" ? "5 小时" : "本周";
             var reset = fmtReset(bucket.reset);
+            var countdown = relativeReset(bucket.reset);
             var sub = bucket.disabled ? "当前不适用"
-              : ("剩余 " + pct + "%" + (reset ? " · " + reset + " 重置" : ""));
+              : (countdown ? countdown + "重置" : "未提供重置时间");
+            var full = bucket.disabled ? sub
+              : (sub + (reset ? "（" + reset + "）" : ""));
             html += '<div class="quota-cell">' +
-              '<div class="q-top"><span class="q-model">' + esc(label) + " · " +
-                windowLabel + '</span><span class="q-pct">' + pct + '%</span></div>' +
+              '<div class="q-top"><span class="q-model">' + esc(label) +
+                '</span><span class="q-pct">' + pct + '%</span></div>' +
               '<div class="q-bar"><i class="' + level + '" style="width:' +
                 Math.max(0, Math.min(100, pct)) + '%"></i></div>' +
-              '<div class="q-sub" title="' + esc(sub) + '">' + esc(sub) + '</div>' +
+              '<div class="q-sub" title="' + esc(full) + '">' +
+                '<span class="q-window">' + windowLabel + '</span>' +
+                '<span>' + esc(sub) + '</span></div>' +
             '</div>';
           });
         });
@@ -569,6 +631,92 @@
           html += '<div class="quota-note">显示缓存额度：' + esc(q.error || "刷新失败") + '</div>';
         }
         return html;
+      }
+
+      function relativeReset(iso) {
+        if (!iso) return "";
+        var delta = new Date(iso).getTime() - Date.now();
+        if (isNaN(delta)) return "";
+        if (delta <= 0) return "即将";
+        var minutes = Math.round(delta / 60000);
+        if (minutes < 60) return minutes + " 分钟后";
+        var hours = Math.round(minutes / 60);
+        if (hours < 48) return hours + " 小时后";
+        return Math.round(hours / 24) + " 天后";
+      }
+
+      function tierClass(tier) {
+        var value = String(tier || "").toLowerCase();
+        return ["free", "pro", "ultra", "standard"].indexOf(value) >= 0 ? value : "";
+      }
+
+      function setStatValue(id, text, level, small) {
+        var el = $(id);
+        if (!el) return;
+        el.textContent = text;
+        el.className = "stat-value" + (small ? " small" : "") + (level ? " " + level : "");
+      }
+
+      function minQuota(window) {
+        if (!quotas || !state) return null;
+        var best = null;
+        (state.accounts || []).forEach(function (account) {
+          var quota = quotas[account.id];
+          if (!quota || quota.status === "error") return;
+          (quota.groups || []).forEach(function (group) {
+            var bucket = group.windows && group.windows[window];
+            if (!bucket || bucket.disabled) return;
+            var pct = Math.round(Number(bucket.remaining) * 100);
+            if (!best || pct < best.pct) best = { pct: pct, name: account.name };
+          });
+        });
+        return best;
+      }
+
+      function renderStats() {
+        if (!state) return;
+        var accounts = state.accounts || [];
+        $("statsStrip").hidden = accounts.length === 0;
+        if (!accounts.length) return;
+
+        setStatValue("statAccounts", String(accounts.length), "", false);
+        $("statAccountsSub").textContent = "个已保存快照";
+
+        var currentQuota = state.current && quotas ? quotas[state.current] : null;
+        var tier = currentQuota && currentQuota.tier ? currentQuota.tier : "—";
+        setStatValue("statTier", tier, "", true);
+        $("statTierSub").textContent = currentQuota
+          ? (currentQuota.status === "stale" ? "缓存数据，可能过期" : "Google Antigravity")
+          : "等待额度数据";
+
+        [["5h", "stat5h", "stat5hSub", "所有账号"],
+         ["weekly", "statWeekly", "statWeeklySub", "所有账号"]].forEach(function (item) {
+          var window = item[0], valueId = item[1], subId = item[2];
+          var best = minQuota(window);
+          if (!quotas) {
+            setStatValue(valueId, "查询中", "", false);
+            $(subId).textContent = "正在读取 Google 额度";
+          } else if (!best) {
+            setStatValue(valueId, "—", "", false);
+            $(subId).textContent = "暂无可用数据";
+          } else {
+            var level = best.pct < 20 ? "crit" : (best.pct < 60 ? "low" : "");
+            setStatValue(valueId, best.pct + "%", level, false);
+            $(subId).textContent = "最低：" + best.name;
+          }
+        });
+
+        var updated = $("quotaUpdated");
+        if (updated) {
+          if (quotas && lastQuotaAt) {
+            updated.textContent = "额度更新于 " +
+              relativeTime(Math.floor(lastQuotaAt / 1000));
+          } else if (quotas) {
+            updated.textContent = "";
+          } else {
+            updated.textContent = "额度加载中";
+          }
+        }
       }
 
       function renderQuotas() {
@@ -582,7 +730,7 @@
           if (quota && quota.tier) {
             tag.hidden = false;
             tag.textContent = quota.tier;
-            tag.className = "tier-tag " + String(quota.tier).toLowerCase();
+            tag.className = "tier-tag " + tierClass(quota.tier);
           } else {
             tag.hidden = true;
           }
@@ -593,11 +741,12 @@
           if (currentQuota && currentQuota.tier) {
             heroTag.hidden = false;
             heroTag.textContent = currentQuota.tier;
-            heroTag.className = "tier-tag " + String(currentQuota.tier).toLowerCase();
+            heroTag.className = "tier-tag " + tierClass(currentQuota.tier);
           } else {
             heroTag.hidden = true;
           }
         }
+        renderStats();
       }
 
       function loadQuotas(force) {
@@ -714,6 +863,7 @@
 
         $("openAppBtn").disabled = !data.app_url;
         renderQuotas();
+        renderStats();
       }
 
       function refresh(silent) {

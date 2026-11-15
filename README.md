@@ -70,7 +70,8 @@ Antigravity 在机器上的状态分三层：
 - 账号卡片列表：名称、邮箱、当前标记、上次使用时间
 - 当前账号判定：令牌字节一致，或 `refresh_token` 相同（应对 access_token 轮换）
 - 每个已保存账号的套餐（Free / Pro / Ultra / Standard）与额度
-- 5 小时 / 每周额度条、剩余百分比与重置时间
+- 5 小时 / 每周额度条、剩余百分比与重置倒计时
+- 顶部汇总：账号数、当前套餐、5 小时最低剩余、本周最低剩余
 - 保存当前登录为命名快照（自动识别邮箱）
 - 一键切换：停止 → 替换 → 启动 → 探测，全程串行
 - 失败自动回滚：任何一步出错都恢复原令牌并尽量拉起服务
@@ -370,5 +371,10 @@ python3 -m unittest discover -s tests -v
 - 完整法律文本见 [LICENSE](LICENSE)，版权与署名信息见 [NOTICE](NOTICE)
 
 > 说明：Creative Commons 官方并不建议将 CC 许可用于软件，因为其缺少专利授权与源代码分发条款。本项目按项目所有者的要求采用该许可；如需商业使用，请另行取得授权。
+
+## 致谢
+
+- [AFSlayer/antigravity-server](https://github.com/AFSlayer/antigravity-server)：提供 Antigravity 网页入口与鉴权。
+- [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch)：账号卡片、套餐与额度展示的交互参考；本项目未复制其代码，仅做独立实现。
 
 与 Google、AFSlayer/antigravity-server 及上述社区项目均无隶属关系，仅为个人自托管的组合方案。
