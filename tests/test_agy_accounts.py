@@ -272,18 +272,36 @@ class PanelTest(unittest.TestCase):
 
     def test_rotation_is_written_back(self):
         self.login()
-        live = b'{"refresh_token":"rotated","email":"a@example.com"}'
-        self.write_token(live)
+        first = (b'{"token":{"refresh_token":"stable-rt","access_token":"a1"},'
+                 b'"id_token":"' + jwt({"email": "a@example.com"}).encode() + b'"}')
+        self.write_token(first)
         self.assertEqual(self.save("A 号")[0], 200)
         account_id = self.account_id("A 号")
         path = os.path.join(self.accounts_dir, account_id)
-        # 切换前会把线上令牌写回匹配的快照（内容一致，属于防御性操作）
-        self.assertEqual(agy_accounts.sync_rotated_token(self.loaded, live), account_id)
+
+        # access_token 轮换，refresh_token 不变：仍应识别为同一账号
+        rotated = (b'{"token":{"refresh_token":"stable-rt","access_token":"a2"},'
+                   b'"id_token":"' + jwt({"email": "a@example.com"}).encode() + b'"}')
+        self.write_token(rotated)
+        status, data, _ = self.status()
+        self.assertTrue(any(a["id"] == account_id and a["is_current"]
+                            for a in data["accounts"]))
+        self.assertEqual(self.save("重复保存")[0], 409)
+
+        # 切换前把线上最新令牌写回快照
+        self.assertEqual(agy_accounts.sync_rotated_token(self.loaded, rotated), account_id)
         with open(os.path.join(path, "token"), "rb") as fh:
-            self.assertEqual(fh.read(), live)
-        with open(os.path.join(path, "meta.json"), encoding="utf-8") as fh:
-            meta = json.load(fh)
-        self.assertEqual(meta["email"], "a@example.com")
+            self.assertEqual(fh.read(), rotated)
+
+        # 切到同一账号：不重启，但快照会同步为最新令牌
+        self.write_token(first)
+        starts = self.start_count()
+        status, data, _ = self.switch(account_id)
+        self.assertEqual(status, 200, data)
+        self.assertTrue(data["already_current"])
+        self.assertEqual(self.start_count(), starts)
+        with open(os.path.join(path, "token"), "rb") as fh:
+            self.assertEqual(fh.read(), first)
 
     def test_start_failure_rolls_back(self):
         self.login()

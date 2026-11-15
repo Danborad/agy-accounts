@@ -443,6 +443,52 @@ def extract_email(raw: Optional[bytes]) -> str:
     return match.group(0) if match else ""
 
 
+
+def _token_json(raw: Optional[bytes]) -> Any:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.decode("utf-8", "replace").lstrip("\ufeff"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def refresh_token_of(raw: Optional[bytes]) -> str:
+    """取出 refresh_token。它是账号的稳定标识，access_token / 过期时间会轮换。
+
+    兼容 agy-server 的 {"token": {"refresh_token": ...}} 以及扁平结构。
+    """
+    obj = _token_json(raw)
+    if not isinstance(obj, dict):
+        return ""
+    seen = set()
+
+    def walk(node: Any, depth: int = 0) -> str:
+        if depth > 4 or not isinstance(node, dict) or id(node) in seen:
+            return ""
+        seen.add(id(node))
+        value = node.get("refresh_token")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        for child in node.values():
+            found = walk(child, depth + 1)
+            if found:
+                return found
+        return ""
+
+    return walk(obj)
+
+
+def same_login(left: Optional[bytes], right: Optional[bytes]) -> bool:
+    """字节完全一致，或 refresh_token 相同，都视为同一个 Google 登录。"""
+    if left is None or right is None:
+        return False
+    if left == right:
+        return True
+    left_rt = refresh_token_of(left)
+    return bool(left_rt) and left_rt == refresh_token_of(right)
+
+
 def token_label(raw: Optional[bytes]) -> str:
     """日志里只能出现长度与摘要前缀，绝不输出内容。"""
     if raw is None:
@@ -519,7 +565,6 @@ def list_accounts(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not os.path.isdir(root):
         return []
     live = read_bytes(cfg["token_path"])
-    live_digest = sha256(live) if live else None
     result: List[Dict[str, Any]] = []
     try:
         entries = list(os.scandir(root))
@@ -537,7 +582,7 @@ def list_accounts(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
         path = entry.path
         meta = read_json(account_meta_path(path))
         token = read_bytes(account_token_path(path))
-        is_current = bool(live_digest and token and sha256(token) == live_digest)
+        is_current = bool(token and same_login(token, live))
         name = str(meta.get("name") or account_id)
         email = str(meta.get("email") or "") or extract_email(token)
         result.append({
@@ -580,11 +625,10 @@ def save_account(cfg: Dict[str, Any], name: str) -> Dict[str, Any]:
     if duplicate:
         raise ApiError(409, "已存在同名账号「%s」，请换一个名称。" % name)
 
-    live_digest = sha256(live)
     for account in list_accounts(cfg):
         path = account_dir(cfg, account["id"])
         token = read_bytes(account_token_path(path))
-        if token and sha256(token) == live_digest:
+        if token and same_login(token, live):
             raise ApiError(409, "当前登录已保存为「%s」，无需重复保存。" % account["name"])
 
     ensure_dir(cfg["accounts_dir"], 0o700)
@@ -625,12 +669,12 @@ def touch_account(path: str, meta: Dict[str, Any], stamp: Optional[int] = None) 
 
 def sync_rotated_token(cfg: Dict[str, Any], live: bytes) -> Optional[str]:
     """Google 刷新令牌可能轮换，切换前把线上令牌写回匹配的快照。"""
-    live_digest = sha256(live)
     for account in list_accounts(cfg):
         path = account_dir(cfg, account["id"])
         token = read_bytes(account_token_path(path))
-        if token and sha256(token) == live_digest:
-            write_atomic(account_token_path(path), live, 0o600)
+        if token and same_login(token, live):
+            if token != live:
+                write_atomic(account_token_path(path), live, 0o600)
             return str(account["id"])
     return None
 
@@ -774,7 +818,10 @@ class Switcher:
         live = read_bytes(cfg["token_path"])
         if live is None and os.path.exists(cfg["token_path"]):
             raise ApiError(500, "令牌文件存在但不可读，请检查权限：%s" % cfg["token_path"])
-        if live is not None and live == target:
+        if live is not None and same_login(live, target):
+            if live != target:
+                write_atomic(account_token_path(path), live, 0o600)
+                log.info("线上令牌已刷新，快照同步更新 id=%s", account_id)
             touch_account(path, meta)
             return {"ok": True, "already_current": True, "name": name,
                     "message": "当前已经是「%s」" % name}
