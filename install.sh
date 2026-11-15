@@ -3,7 +3,6 @@
 # 用法：sudo ./install.sh [选项]
 set -euo pipefail
 
-APP=agy-accounts
 PREFIX="${AGY_ACCOUNTS_PREFIX:-/opt/agy-accounts}"
 RUN_USER="${AGY_ACCOUNTS_USER:-root}"
 UNIT_NAME="${AGY_ACCOUNTS_UNIT:-agy-accounts}"
