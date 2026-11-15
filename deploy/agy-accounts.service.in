@@ -9,7 +9,7 @@ Type=simple
 User=__USER__
 Group=__GROUP__
 WorkingDirectory=__PREFIX__
-ExecStart=__PYTHON__ __PREFIX__/agy_accounts.py serve --config __CONFIG__
+ExecStart=__PYTHON__ __PREFIX__/agy_accounts.py --config __CONFIG__ serve
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=HOME=__HOME__

@@ -9,8 +9,10 @@ UNIT_NAME="${AGY_ACCOUNTS_UNIT:-agy-accounts}"
 UNIT_DIR="${AGY_UNIT_DIR:-/etc/systemd/system}"
 AGY_SERVICE="${AGY_SERVICE_NAME:-agy-server}"
 PANEL_PORT="${AGY_ACCOUNTS_PORT:-8790}"
+LISTEN_HOST="${AGY_ACCOUNTS_HOST:-127.0.0.1}"
 TOKEN_PATH="${AGY_TOKEN_PATH:-}"
 APP_URL="${AGY_APP_URL:-}"
+PROBE_URL="${AGY_PROBE_URL:-}"
 PANEL_PASSWORD="${AGY_ACCOUNTS_PASSWORD:-}"
 CONFIG_PATH=""
 NO_START=0
@@ -30,11 +32,13 @@ usage() {
   --prefix PATH        安装目录（默认 /opt/agy-accounts）
   --user USER          运行面板的系统用户（默认 root）
   --config PATH        配置文件路径（默认 <user-home>/.config/agy-accounts/config.json）
-  --port N             面板监听端口（默认 8790，仅回环）
+  --port N             面板监听端口（默认 8790）
+  --listen ADDR        面板监听地址（默认 127.0.0.1；局域网访问用 0.0.0.0）
   --agy-service NAME   受控的 agy-server systemd 单元名（默认 agy-server）
   --token PATH         language_server 的 OAuth 令牌路径
                        （默认 <user-home>/.gemini/jetski-standalone-oauth-token）
   --app-url URL        Antigravity 页面地址（默认 http://127.0.0.1:8765/）
+  --probe-url URL      服务就绪探测地址（默认 http://127.0.0.1:8765/）
   --password PW        面板密码；省略时交互输入
   --no-start           只安装，不启动服务
   --skip-check         安装后跳过自检
@@ -51,9 +55,11 @@ while [[ $# -gt 0 ]]; do
     --user) RUN_USER="${2:?--user 需要参数}"; shift 2 ;;
     --config) CONFIG_PATH="${2:?--config 需要参数}"; shift 2 ;;
     --port) PANEL_PORT="${2:?--port 需要参数}"; shift 2 ;;
+    --listen) LISTEN_HOST="${2:?--listen 需要参数}"; shift 2 ;;
     --agy-service) AGY_SERVICE="${2:?--agy-service 需要参数}"; shift 2 ;;
     --token) TOKEN_PATH="${2:?--token 需要参数}"; shift 2 ;;
     --app-url) APP_URL="${2:?--app-url 需要参数}"; shift 2 ;;
+    --probe-url) PROBE_URL="${2:?--probe-url 需要参数}"; shift 2 ;;
     --password) PANEL_PASSWORD="${2:?--password 需要参数}"; shift 2 ;;
     --no-start) NO_START=1; shift ;;
     --skip-check) SKIP_CHECK=1; shift ;;
@@ -82,6 +88,7 @@ GROUP_NAME="$(id -gn "${RUN_USER}")"
 TOKEN_PATH="${TOKEN_PATH:-${HOME_DIR}/.gemini/jetski-standalone-oauth-token}"
 TOKEN_PATH="${TOKEN_PATH/#\~/${HOME_DIR}}"
 APP_URL="${APP_URL:-http://127.0.0.1:8765/}"
+PROBE_URL="${PROBE_URL:-http://127.0.0.1:8765/}"
 CONFIG_PATH="${CONFIG_PATH:-${HOME_DIR}/.config/agy-accounts/config.json}"
 CONFIG_PATH="${CONFIG_PATH/#\~/${HOME_DIR}}"
 CONFIG_DIR="$(dirname "${CONFIG_PATH}")"
@@ -133,6 +140,8 @@ if [[ "${CONFIG_EXISTS}" -eq 0 ]]; then
   AGY_CFG_ACCOUNTS="${STATE_DIR}" \
   AGY_CFG_SERVICE="${AGY_SERVICE}" \
   AGY_CFG_APP_URL="${APP_URL}" \
+  AGY_CFG_PROBE_URL="${PROBE_URL}" \
+  AGY_CFG_LISTEN="${LISTEN_HOST}" \
   AGY_CFG_PORT="${PANEL_PORT}" \
   AGY_CFG_HASH="${HASH}" \
   AGY_CFG_PATH="${CONFIG_PATH}" \
@@ -147,7 +156,8 @@ cfg.update({
     "accounts_dir": os.environ["AGY_CFG_ACCOUNTS"],
     "service_name": os.environ["AGY_CFG_SERVICE"],
     "app_url": os.environ["AGY_CFG_APP_URL"],
-    "probe_url": os.environ["AGY_CFG_APP_URL"],
+    "probe_url": os.environ["AGY_CFG_PROBE_URL"],
+    "listen_host": os.environ["AGY_CFG_LISTEN"],
     "listen_port": int(os.environ["AGY_CFG_PORT"]),
     "password_hash": os.environ["AGY_CFG_HASH"],
 })
@@ -188,6 +198,12 @@ fi
 unset PANEL_PASSWORD CONFIRM HASH
 
 SHOW_PORT="$("${PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("listen_port", 8790))' "${CONFIG_PATH}" 2>/dev/null || echo "${PANEL_PORT}")"
+CONFIG_LISTEN="$("${PYTHON}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("listen_host", "127.0.0.1"))' "${CONFIG_PATH}" 2>/dev/null || echo "${LISTEN_HOST}")"
+SHOW_HOST="${CONFIG_LISTEN}"
+if [[ "${SHOW_HOST}" == "0.0.0.0" || "${SHOW_HOST}" == "::" ]]; then
+  SHOW_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  SHOW_HOST="${SHOW_HOST:-127.0.0.1}"
+fi
 
 UNIT_PATH="${UNIT_DIR}/${UNIT_NAME}.service"
 info "写入 systemd 单元 ${UNIT_PATH}"
@@ -212,7 +228,10 @@ if [[ "${NO_START}" -eq 0 ]]; then
   systemctl restart "${UNIT_NAME}"
   sleep 1
   if systemctl is-active --quiet "${UNIT_NAME}"; then
-    ok "面板已启动：http://127.0.0.1:${SHOW_PORT}/"
+    ok "面板已启动：http://${SHOW_HOST}:${SHOW_PORT}/"
+    if [[ "${LISTEN_HOST}" != "127.0.0.1" && "${LISTEN_HOST}" != "::1" ]]; then
+      warn "面板已对局域网开放，请使用强密码，并只在可信网络中使用"
+    fi
   else
     warn "面板未能启动，查看日志：journalctl -u ${UNIT_NAME} -n 50 --no-pager"
   fi
@@ -228,7 +247,7 @@ cat <<EOF
 下一步
   1. 如果还没部署 agy-server，请先按 https://github.com/AFSlayer/antigravity-server 安装，
      并在网页里完成一次 Google 登录。
-  2. 打开面板 http://127.0.0.1:${SHOW_PORT}/ ，${PASSWORD_HINT}。
+  2. 打开面板 http://${SHOW_HOST}:${SHOW_PORT}/ ，${PASSWORD_HINT}。
   3. 点「保存当前登录」为账号起名，之后即可一键切换。
 
 常用命令
@@ -237,7 +256,7 @@ cat <<EOF
   ${PYTHON} ${PREFIX}/agy_accounts.py --config ${CONFIG_PATH} check
 
 注意
-  面板默认只监听 127.0.0.1。如需手机访问，请用 Tailscale 或再加一层带密码的反向代理，
+  面板监听地址：${CONFIG_LISTEN}。如果是对局域网开放，请使用强密码，并只在可信网络中使用；
   不要直接暴露到公网。
 
 EOF
