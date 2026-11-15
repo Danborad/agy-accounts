@@ -5,6 +5,10 @@ secret.key
 accounts/
 .agy-accounts/
 
+# Node / vendored frontend build
+node_modules/
+webapp-src/dist/
+
 # Python
 __pycache__/
 *.py[cod]

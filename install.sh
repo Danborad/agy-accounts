@@ -119,6 +119,12 @@ install -d -m 0755 "${PREFIX}"
 install -m 0755 "${SRC}/agy_accounts.py" "${PREFIX}/agy_accounts.py"
 install -d -m 0755 "${PREFIX}/web"
 install -m 0644 "${SRC}"/web/* "${PREFIX}/web/"
+if [[ -d "${SRC}/webapp" ]]; then
+  rm -rf "${PREFIX}/webapp"
+  cp -a "${SRC}/webapp" "${PREFIX}/webapp"
+  find "${PREFIX}/webapp" -type d -exec chmod 0755 {} +
+  find "${PREFIX}/webapp" -type f -exec chmod 0644 {} +
+fi
 install -m 0644 "${SRC}/config.example.json" "${PREFIX}/config.example.json"
 if [[ -f "${SRC}/LICENSE" ]]; then install -m 0644 "${SRC}/LICENSE" "${PREFIX}/LICENSE"; fi
 if [[ -f "${SRC}/NOTICE" ]]; then install -m 0644 "${SRC}/NOTICE" "${PREFIX}/NOTICE"; fi

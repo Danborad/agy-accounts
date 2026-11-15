@@ -2,6 +2,18 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.3.0] - 2026-11-16
+
+### 变更
+
+- 根路径改用 `anglee0323/agy-switch` 前端（vendored，CC BY-NC-SA 4.0）
+- 新增 `webapp-src/` 源码与 `webapp/` 构建产物，以及 Tauri → HTTP 桥接
+- 账号管理支持列表 / 卡片、筛选、拖拽排序、备注与额度刷新
+- 仪表盘接入账号状态与综合额度；Token 用量与费用暂显示为 0
+- 原轻量面板移到 `/classic`
+- 右下角工具栏提供保存当前登录、经典面板与退出
+- 版本 1.3.0
+
 ## [1.2.0] - 2026-11-16
 
 ### 新增

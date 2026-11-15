@@ -7,9 +7,11 @@
 > 本项目不是 `agy-server` 的替代品，也不修改它。`agy-server` 负责网页界面与鉴权，本面板只管理 `language_server` 使用的 OAuth 令牌文件。
 
 <div align="center">
-  <img src="docs/assets/panel-quota.png" width="540" alt="桌面端账号面板与额度">
-  <img src="docs/assets/panel-mobile.png" width="210" alt="手机端账号面板">
+  <img src="docs/assets/ui-dashboard.png" width="620" alt="仪表盘">
+  <img src="docs/assets/ui-accounts.png" width="620" alt="账号管理">
 </div>
+
+> 根路径使用基于 [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch) 前端的完整界面；轻量经典面板保留在 `/classic`。
 
 ---
 
@@ -67,27 +69,32 @@ Antigravity 在机器上的状态分三层：
 ## 功能
 
 - 共享密码登录，PBKDF2 哈希存储，常量时间比较
-- 账号卡片列表：名称、邮箱、当前标记、上次使用时间
+- 原版风格的仪表盘、账号列表 / 卡片视图、设置页
+- 账号列表：邮箱、套餐、当前标记、备注、最后使用时间、拖拽排序
 - 当前账号判定：令牌字节一致，或 `refresh_token` 相同（应对 access_token 轮换）
 - 每个已保存账号的套餐（Free / Pro / Ultra / Standard）与额度
-- 5 小时 / 每周额度条、剩余百分比与重置倒计时
-- 顶部汇总：账号数、当前套餐、5 小时最低剩余、本周最低剩余
-- 保存当前登录为命名快照（自动识别邮箱）
+- 5 小时 / 每周额度条、剩余百分比、重置倒计时与重置时间
+- 账号状态与综合额度汇总卡片
+- 保存当前登录为命名快照（右下角工具栏，自动识别邮箱）
 - 一键切换：停止 → 替换 → 启动 → 探测，全程串行
 - 失败自动回滚：任何一步出错都恢复原令牌并尽量拉起服务
-- 重命名（只改显示名，目录 ID 不变）
+- 重命名 / 编辑备注（只改显示名，目录 ID 不变）
 - 删除快照（不触碰线上令牌与业务数据）
 - 健康检查 `/healthz`、状态查询 `/api/status`
-- 暗色单页界面，适配手机；切换成功后自动跳转 Antigravity
-- 仅依赖 Python 3.9+ 标准库
+- 切换成功后可由配置决定跳转 Antigravity
+- 运行时仅依赖 Python 3.9+ 标准库；前端是已构建的静态文件
 - 登录限速、CSRF 校验、跨站 Origin 拒绝、会话 Cookie 加固
+- 经典轻量面板保留在 `/classic`，用于排障与对照
+
+> 仪表盘中的 Token 用量、模型分布与费用估算暂未接入服务器本地数据库，当前显示为 0；账号状态与额度是真实数据。
 
 ## 系统架构
 
 ```
 手机 / 电脑浏览器
       │
-      ├── http://127.0.0.1:8790/        agy-accounts 面板
+      ├── http://127.0.0.1:8790/        agy-accounts 新版 UI
+      ├── http://127.0.0.1:8790/classic 经典面板
       │        │  systemctl stop/start agy-server
       │        └── 替换 ~/.gemini/jetski-standalone-oauth-token
       │
@@ -155,6 +162,10 @@ sudo ./install.sh \
 > 面板的 `probe_url` 建议保持 `http://127.0.0.1:8765/`，让就绪探测走本机；`app_url` 才填局域网地址，用于切换成功后跳转。
 
 安装完成后打开 `http://127.0.0.1:8790/`，输入安装时设置的密码。
+
+- `/`：完整界面（账号管理、仪表盘、设置）
+- `/classic`：轻量经典面板
+- 右下角工具栏提供「保存当前登录」「经典面板」「退出」
 
 ### 第一次使用
 
@@ -233,6 +244,19 @@ python3 agy_accounts.py hash-password
 2. 给该用户仅授权三条命令，见 `deploy/agy-accounts.sudoers.example`；
 3. 在配置里把三条命令改成 `sudo -n /usr/bin/systemctl ...`；
 4. 确保该用户对令牌文件与快照目录有读写权限。
+
+## 前端构建（仅开发时需要）
+
+仓库已经提交构建好的 `webapp/`，目标 Debian 主机不需要安装 Node.js。
+
+修改前端源码后：
+
+```bash
+cd webapp-src
+./build.sh            # 需要 Node.js 22.12+
+```
+
+构建产物会写入 `webapp/`。源码与改动说明见 [`webapp-src/README.md`](webapp-src/README.md)。
 
 ## 命令行
 
@@ -375,6 +399,6 @@ python3 -m unittest discover -s tests -v
 ## 致谢
 
 - [AFSlayer/antigravity-server](https://github.com/AFSlayer/antigravity-server)：提供 Antigravity 网页入口与鉴权。
-- [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch)：账号卡片、套餐与额度展示的交互参考；本项目未复制其代码，仅做独立实现。
+- [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch)：`webapp-src/` 与 `webapp/` 的前端来源，同一 CC BY-NC-SA 4.0 许可；本项目补充了 Tauri → HTTP 桥接并做了少量构建调整，详见 `NOTICE` 与 `webapp-src/README.md`。
 
 与 Google、AFSlayer/antigravity-server 及上述社区项目均无隶属关系，仅为个人自托管的组合方案。

@@ -163,6 +163,14 @@ class PanelTest(unittest.TestCase):
         conn.close()
         return response.status, data, set_cookie
 
+    def raw_get(self, path):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request("GET", path)
+        response = conn.getresponse()
+        body = response.read()
+        conn.close()
+        return response.status, body
+
     def login(self, password="test-password"):
         status, data, cookie = self.request("POST", "/api/login",
                                             {"password": password}, auth=False)
@@ -203,6 +211,21 @@ class PanelTest(unittest.TestCase):
         status, data, _ = self.request("GET", "/healthz", auth=False)
         self.assertEqual(status, 200)
         self.assertTrue(data["ok"])
+
+    def test_web_ui_routes(self):
+        status, body = self.raw_get("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"tauri-shim.js", body)
+        status, body = self.raw_get("/accounts")
+        self.assertEqual(status, 200)
+        self.assertIn(b"tauri-shim.js", body)
+        status, body = self.raw_get("/classic")
+        self.assertEqual(status, 200)
+        self.assertIn(b'id="loginForm"', body)
+        status, _ = self.raw_get("/assets/does-not-exist.js")
+        self.assertEqual(status, 404)
+        status, _ = self.raw_get("/assets/%2e%2e/agy_accounts.py")
+        self.assertEqual(status, 404)
 
     def test_api_requires_login(self):
         status, data, _ = self.request("GET", "/api/status", auth=False)

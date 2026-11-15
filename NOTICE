@@ -13,3 +13,18 @@ When sharing or adapting this work, you must:
   - indicate if changes were made;
   - not use the material for commercial purposes;
   - distribute your contributions under the same license.
+
+--------------------------------------------------------------------------
+Third-party frontend
+
+The web UI under webapp-src/ and the built assets under webapp/ are derived
+from anglee0323/agy-switch (version 4.10.16,
+commit db370ab5d12859f78a30c4acc4a0998a6fe8ce02):
+
+  https://github.com/anglee0323/agy-switch
+  Copyright (c) anglee0323 and contributors
+  Licensed under CC BY-NC-SA 4.0
+
+Modifications: Vite base path changed to "/", page title changed, a new
+tauri-shim.js HTTP bridge was added, and the Rust/Tauri backend was omitted
+and replaced by that bridge. See webapp-src/README.md for details.
