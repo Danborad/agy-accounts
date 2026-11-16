@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.9.1"
+VERSION = "1.9.2"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -286,11 +286,16 @@ def load_preferences(cfg: Dict[str, Any]) -> Dict[str, Any]:
         cards = dashboard.get("cards")
         order = dashboard.get("order")
         if isinstance(cards, list) and isinstance(order, list):
-            return {"dashboard": {
+            try:
+                revision = int(data.get("rev") or 0)
+            except (TypeError, ValueError):
+                revision = 0
+            return {"rev": revision, "dashboard": {
                 "cards": [str(x) for x in cards][:50],
                 "order": [str(x) for x in order][:50],
             }}
-    return {}
+    return {"rev": 0, "dashboard": {"cards": list(DEFAULT_DASHBOARD_CARDS),
+                                     "order": list(DEFAULT_DASHBOARD_ORDER)}}
 
 
 DEFAULT_DASHBOARD_CARDS = ["total_tokens", "input_tokens", "output_tokens",
@@ -310,15 +315,24 @@ def save_preferences(cfg: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any
         raise ApiError(400, "dashboard.cards 与 dashboard.order 必须是数组")
     if len(cards) > 50 or len(order) > 50:
         raise ApiError(400, "卡片数量过多")
+    try:
+        client_rev = int(data.get("rev"))
+    except (TypeError, ValueError):
+        raise ApiError(409, "设置版本缺失，请刷新页面后重试")
+    current = load_preferences(cfg)
+    current_rev = int(current.get("rev") or 0)
+    if client_rev != current_rev:
+        raise ApiError(409, "设置已在其它页面更新，请刷新后再保存")
     cards = [str(x)[:80] for x in cards]
     order = [str(x)[:80] for x in order]
     # 空选择通常是前端竞态或旧标签页写回；个人自用场景直接恢复默认。
     if not cards:
         cards = list(DEFAULT_DASHBOARD_CARDS)
         order = list(DEFAULT_DASHBOARD_ORDER)
-    payload = {"dashboard": {"cards": cards, "order": order}}
+    payload = {"rev": current_rev + 1, "dashboard": {"cards": cards, "order": order}}
     write_json_atomic(preferences_path(cfg), payload, 0o600)
-    log.info("卡片偏好已更新：cards=%d order=%d [%s]", len(cards), len(order), ",".join(cards))
+    log.info("卡片偏好已更新：rev=%d cards=%d order=%d [%s]",
+             payload["rev"], len(cards), len(order), ",".join(cards))
     return payload
 
 

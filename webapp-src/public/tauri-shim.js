@@ -55,7 +55,10 @@
           throw new Error("未登录");
         }
         if (!response.ok) {
-          throw new Error(data.error || ("HTTP " + response.status));
+          var apiError = new Error(data.error || ("HTTP " + response.status));
+          apiError.status = response.status;
+          apiError.data = data;
+          throw apiError;
         }
         return data;
       });
@@ -394,6 +397,22 @@
     try { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); } catch (e) {}
   }
 
+  function syncServerPreferences() {
+    if (serverPreferences) return;
+    try {
+      var prefRequest = new XMLHttpRequest();
+      prefRequest.open("GET", "/api/preferences", false);
+      prefRequest.withCredentials = true;
+      prefRequest.send(null);
+      if (prefRequest.status === 200) {
+        var prefPayload = JSON.parse(prefRequest.responseText || "{}");
+        if (prefPayload && prefPayload.preferences) serverPreferences = prefPayload.preferences;
+      }
+    } catch (e) {
+      console.warn("[agy-accounts] 读取服务端偏好失败：", e);
+    }
+  }
+
   // ----------------------------------------------------------- constants
 
   function zeroTotals() {
@@ -642,21 +661,39 @@
       case "set_window_theme":
       case "set_app_translation":
       case "set_dashboard_cards": {
-        var dashboardConfig = loadConfig();
         var cards = Array.isArray(args.cards) ? args.cards : [];
         var order = Array.isArray(args.order) ? args.order : cards;
-        dashboardConfig.dashboard = { cards: cards, order: order };
-        saveConfig(dashboardConfig);
-        saveDashboardOverride(dashboardConfig.dashboard);
-        serverPreferences = { dashboard: { cards: cards.slice(), order: order.slice() } };
+        if (!serverPreferences || !Number.isFinite(serverPreferences.rev)) {
+          throw new Error("页面版本已过期，请刷新后重试");
+        }
+        var revision = serverPreferences.rev;
+        var response;
         try {
-          await api("/api/preferences", {
+          response = await api("/api/preferences", {
             method: "POST",
-            body: JSON.stringify(serverPreferences)
+            body: JSON.stringify({
+              rev: revision,
+              dashboard: { cards: cards, order: order }
+            })
           });
         } catch (error) {
-          console.warn("[agy-accounts] 保存卡片设置到服务器失败：", error);
+          if (error && error.status === 409) {
+            throw new Error("设置已在其它页面更新，请刷新页面后再保存");
+          }
+          throw error;
         }
+        var saved = (response && response.preferences) || {
+          rev: revision + 1,
+          dashboard: { cards: cards, order: order }
+        };
+        serverPreferences = saved;
+        var dashboardConfig = loadConfig();
+        dashboardConfig.dashboard = {
+          cards: saved.dashboard.cards.slice(),
+          order: saved.dashboard.order.slice()
+        };
+        saveConfig(dashboardConfig);
+        saveDashboardOverride(dashboardConfig.dashboard);
         return dashboardConfig.dashboard;
       }
       case "change_password": {
@@ -712,20 +749,8 @@
       return;
     }
     // 服务端会把偏好注入 HTML；只有缺失时才用同步请求兜底。
-  if (!serverPreferences) try {
-    var prefRequest = new XMLHttpRequest();
-    prefRequest.open("GET", "/api/preferences", false);
-    prefRequest.withCredentials = true;
-    prefRequest.send(null);
-    if (prefRequest.status === 200) {
-      var prefPayload = JSON.parse(prefRequest.responseText || "{}");
-      if (prefPayload && prefPayload.preferences) serverPreferences = prefPayload.preferences;
-    }
-  } catch (e) {
-    console.warn("[agy-accounts] 读取服务端偏好失败：", e);
-  }
-
-  document.documentElement.classList.add("agy-gate");
+    if (!serverPreferences) syncServerPreferences();
+    document.documentElement.classList.add("agy-gate");
     if (gate) {
       var note = gate.querySelector(".agy-gate-note");
       if (note && message) note.textContent = message;
@@ -952,6 +977,7 @@
     }
   };
 
+  syncServerPreferences();
   document.documentElement.classList.add("agy-gate");
   fetch("/api/status", { credentials: "same-origin" }).then(function (response) {
     if (!response.ok) {

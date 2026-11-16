@@ -68,8 +68,9 @@ export default function DashboardSettings() {
             setDraft(null);
             showToast('首页卡片设置已保存', 'success');
         } catch (saveError) {
-            setError(t('dashboard_settings.save_failed', { error: String(saveError) }));
-            showToast(`保存失败：${String(saveError)}`, 'error');
+            const message = saveError instanceof Error ? saveError.message : String(saveError);
+            setError(message);
+            showToast(`保存失败：${message}`, 'error');
         } finally {
             setSaving(false);
         }
