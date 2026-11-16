@@ -6,13 +6,9 @@ import { AppConfig } from '../types/config';
 import { request as invoke } from '../utils/request';
 import { showToast } from '../components/common/ToastContainer';
 import { open } from '@tauri-apps/plugin-dialog';
-import UpdateSettings from '../components/settings/UpdateSettings';
-import DesktopSettings from '../components/settings/DesktopSettings';
 import DashboardSettings from '../components/settings/DashboardSettings';
 import ModelDisplaySettings from '../components/settings/ModelDisplaySettings';
-import ExperimentalSettings from '../components/settings/ExperimentalSettings';
 import NetworkSettings from '../components/settings/NetworkSettings';
-import { AutoSwitchSettings } from '../components/autoSwitch/AutoSwitch';
 import SettingsNavigation, { SETTINGS_SECTIONS, SettingsSection } from '../components/settings/SettingsNavigation';
 import '../components/settings/SettingsLayout.css';
 
@@ -180,8 +176,6 @@ function Settings() {
 
                 {/* 2. 桌面与系统窗口 */}
                 <DashboardSettings />
-                <UpdateSettings />
-                <DesktopSettings />
 
                 {/* 3. 数据存储与关联应用 */}
                 <section className="rounded-2xl border border-gray-200/80 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800 dark:bg-slate-900/80 space-y-5">
@@ -362,8 +356,6 @@ function Settings() {
                 </section>
             </div>
         ),
-        autoSwitch: <AutoSwitchSettings />,
-        experimental: <ExperimentalSettings active={section === 'experimental'} />,
     };
 
     return (
