@@ -333,7 +333,7 @@ function Dashboard() {
     const [usage, setUsage] = useState<LocalTokenUsageSummary | null>(null);
     const [pricing, setPricing] = useState<ApiPricingSnapshot | null>(null);
     const [range, setRange] = useState<RangeKey>('today');
-    const [modelViewMode, setModelViewMode] = useState<'tokens' | 'cost'>('cost');
+    const [modelViewMode, setModelViewMode] = useState<'tokens' | 'cost'>('tokens');
     const [hoveredDonutModel, setHoveredDonutModel] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);

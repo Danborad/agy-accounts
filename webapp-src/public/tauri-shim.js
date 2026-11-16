@@ -738,6 +738,80 @@
     window.location.reload();
   }
 
+
+  // ------------------------------------------------------ cost UI suppression
+
+  function installCostHider() {
+    if (!document.body) {
+      window.addEventListener("DOMContentLoaded", installCostHider, { once: true });
+      return;
+    }
+    var scheduled = false;
+    var tokenViewClicked = false;
+
+    function hide(el) {
+      if (el && el.nodeType === 1 && el !== document.body) {
+        el.style.display = "none";
+        el.setAttribute("data-agy-cost-hidden", "1");
+      }
+    }
+
+    function hideCostColumn(th) {
+      var table = th.closest("table");
+      if (!table) { hide(th); return; }
+      var index = th.cellIndex;
+      table.querySelectorAll("tr").forEach(function (row) {
+        var cell = row.children[index];
+        if (cell) hide(cell);
+      });
+      hide(th);
+    }
+
+    function sweep() {
+      scheduled = false;
+      if (!tokenViewClicked) {
+        var tokenButton = Array.prototype.find.call(
+          document.querySelectorAll("button"),
+          function (button) { return (button.textContent || "").trim() === "Token 用量"; }
+        );
+        if (tokenButton) {
+          tokenButton.click();
+          tokenViewClicked = true;
+        }
+      }
+      document.querySelectorAll("th").forEach(function (th) {
+        if ((th.textContent || "").trim() === "预估费用") hideCostColumn(th);
+      });
+      document.querySelectorAll("td,button,span,p,label,div").forEach(function (el) {
+        if (el.getAttribute("data-agy-cost-hidden")) return;
+        var text = (el.textContent || "").trim();
+        if (!text || text.length > 120) return;
+        if (text === "预估费用" || text === "API 费用估算") {
+          if (el.tagName === "TH") hideCostColumn(el);
+          else if (el.tagName === "TD" || el.tagName === "BUTTON") hide(el);
+          else {
+            var row = el.closest("label, li, .card, [role='listitem']") || el.parentElement;
+            hide(row || el);
+          }
+        } else if (text === "未计价" || text === "暂无可用价格" || text === "暂无预估费用") {
+          if (el.tagName === "TD") hide(el);
+          else hide(el.closest("p, div, span") || el);
+        } else if (text.indexOf("未计入费用估算") >= 0 || text.indexOf("个模型未计价") >= 0) {
+          hide(el.closest("p, div") || el);
+        }
+      });
+    }
+
+    function schedule() {
+      if (scheduled) return;
+      scheduled = true;
+      window.requestAnimationFrame(sweep);
+    }
+
+    new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    schedule();
+  }
+
   // --------------------------------------------------------------- boot
 
   var style = document.createElement("style");
@@ -797,6 +871,7 @@
   fetch("/api/status", { credentials: "same-origin" }).then(function (response) {
     if (response.ok) {
       document.documentElement.classList.remove("agy-gate");
+      installCostHider();
     } else {
       showLogin();
     }
