@@ -75,6 +75,7 @@
     if (!cache.status || quotaTimer || quotaInflight) return;
     var quotas = (cache.quotas && cache.quotas.quotas) || {};
     var now = Date.now();
+    if (now - quotaRefreshAt < 15000) return;
     var needsRefresh = Object.keys(quotas).some(function (id) {
       var quota = quotas[id];
       if (!quota || quota.status === "loading" || !quota.fetched_at) return true;
@@ -434,9 +435,29 @@
       case "get_current_account": {
         var snap = await loadSnapshot(false);
         var state = snap.status;
-        if (!state.current) return null;
-        var found = (state.accounts || []).filter(function (a) { return a.id === state.current; })[0];
-        return found ? mapAccount(found, snap.quotas.quotas) : null;
+        if (state.current) {
+          var found = (state.accounts || []).filter(function (a) { return a.id === state.current; })[0];
+          if (found) return mapAccount(found, snap.quotas.quotas);
+        }
+        if (state.token_present) {
+          var email = state.token_email || "当前登录";
+          return {
+            id: "__live__",
+            email: email,
+            name: "当前登录（未保存）",
+            token: {
+              access_token: "", refresh_token: "", expires_in: 0,
+              expiry_timestamp: 0, token_type: "Bearer", email: email
+            },
+            quota: emptyQuota(),
+            disabled: false,
+            protected_models: [],
+            custom_label: null,
+            created_at: 0,
+            last_used: Math.floor(Date.now() / 1000)
+          };
+        }
+        return null;
       }
       case "get_account_dashboard_snapshot": {
         var snap = (await loadSnapshot(false));

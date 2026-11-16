@@ -786,6 +786,24 @@ function Accounts() {
         </div>
       </div>
 
+      {currentAccount?.id === "__live__" && (
+        <div className="mx-1 mb-2 flex flex-wrap items-center gap-3 rounded-xl border border-amber-200/70 bg-amber-50/80 px-4 py-2.5 text-xs dark:border-amber-800/50 dark:bg-amber-950/30">
+          <span className="font-medium text-amber-800 dark:text-amber-300">
+            当前登录
+            <span className="mx-1 font-mono">
+              {privacyMode ? maskEmail(currentAccount.email) : currentAccount.email}
+            </span>
+            尚未保存为账号快照
+          </span>
+          <button
+            className="rounded-lg bg-amber-500 px-3 py-1.5 font-semibold text-white transition-colors hover:bg-amber-600"
+            onClick={() => { void handleSaveCurrentLogin(); }}
+          >
+            保存当前登录
+          </button>
+        </div>
+      )}
+
       {/* 账号列表内容区域 */}
       <div className="flex-1 min-h-0 relative" ref={containerRef}>
         {viewMode === "list" ? (
