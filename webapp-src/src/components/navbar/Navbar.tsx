@@ -1,4 +1,4 @@
-import { LayoutDashboard, Users, Settings } from 'lucide-react';
+import { LayoutDashboard, Users, Settings, LogOut } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useConfigStore } from '../../stores/useConfigStore';
 import { isTauri, isLinux } from '../../utils/env';
@@ -115,13 +115,25 @@ function Navbar() {
                     </div>
 
                     {/* 设置按钮 - 自己处理响应式 */}
-                    <div className="ml-auto shrink-0">
+                    <div className="ml-auto flex shrink-0 items-center gap-2">
                         <NavSettings
                             theme={(config?.theme as 'light' | 'dark') || 'light'}
                             currentLanguage={config?.language?.toLowerCase().startsWith('en') ? 'en' : 'zh'}
                             onThemeToggle={toggleTheme}
                             onLanguageChange={handleLanguageChange}
                         />
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const logout = (window as unknown as { __agyLogout?: () => void }).__agyLogout;
+                                if (typeof logout === 'function') logout();
+                            }}
+                            className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100 transition-colors hover:bg-red-50 hover:text-red-500 dark:bg-base-200 dark:hover:bg-red-950/30 dark:hover:text-red-400"
+                            title="退出面板登录"
+                            aria-label="退出面板登录"
+                        >
+                            <LogOut className="h-5 w-5" />
+                        </button>
                     </div>
                 </div>
             </div>

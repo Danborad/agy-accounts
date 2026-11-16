@@ -737,6 +737,7 @@
   }
 
   window.__agySaveCurrent = saveCurrentLogin;
+  window.__agyLogout = logout;
 
   async function logout() {
     try {
