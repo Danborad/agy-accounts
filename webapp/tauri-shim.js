@@ -30,7 +30,8 @@
   var quotaTimer = null;
   var quotaInflight = null;
   var quotaRefreshAt = 0;
-  var serverPreferences = null;
+  var serverPreferences = (window.__AGY_PREFERENCES__ &&
+      typeof window.__AGY_PREFERENCES__ === "object") ? window.__AGY_PREFERENCES__ : null;
 
   try { localStorage.setItem(THEME_KEY, "dark"); } catch (e) {}
 
@@ -700,8 +701,8 @@
       window.addEventListener("DOMContentLoaded", function () { showLogin(message); }, { once: true });
       return;
     }
-    // 先同步读取服务端偏好，保证 React 首次渲染前就能拿到卡片设置。
-  try {
+    // 服务端会把偏好注入 HTML；只有缺失时才用同步请求兜底。
+  if (!serverPreferences) try {
     var prefRequest = new XMLHttpRequest();
     prefRequest.open("GET", "/api/preferences", false);
     prefRequest.withCredentials = true;

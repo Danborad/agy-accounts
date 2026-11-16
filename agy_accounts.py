@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.8.2"
+VERSION = "1.8.3"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -318,6 +318,7 @@ def save_preferences(cfg: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any
         order = list(DEFAULT_DASHBOARD_ORDER)
     payload = {"dashboard": {"cards": cards, "order": order}}
     write_json_atomic(preferences_path(cfg), payload, 0o600)
+    log.info("卡片偏好已更新：cards=%d order=%d [%s]", len(cards), len(order), ",".join(cards))
     return payload
 
 
@@ -1994,6 +1995,24 @@ class PanelHandler(BaseHTTPRequestHandler):
             raise ApiError(404, "未找到该页面")
         ext = os.path.splitext(path)[1].lower()
         content_type = STATIC_TYPES.get(ext, "application/octet-stream")
+        if name == "index.html":
+            # 把服务端偏好直接注入 HTML，避免前端首屏读取竞态。
+            try:
+                preferences = load_preferences(self.app.cfg)
+                payload = json.dumps(preferences, ensure_ascii=False).replace("</", "<\\/")
+                injected = ("<script>window.__AGY_PREFERENCES__=" + payload +
+                            ";</script>")
+                text = data.decode("utf-8", "replace")
+                marker = '<script src="/tauri-shim.js"></script>'
+                if marker in text:
+                    text = text.replace(marker, injected + marker, 1)
+                elif "<head>" in text:
+                    text = text.replace("<head>", "<head>" + injected, 1)
+                else:
+                    text = injected + text
+                data = text.encode("utf-8")
+            except Exception:
+                log.exception("注入服务端偏好失败")
         self._send(200, data, content_type, self._security_headers())
 
     def _handle_login(self) -> None:
