@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { useConfigStore } from '../../stores/useConfigStore';
 import { QuotaItem } from './QuotaItem';
 import { GroupQuota } from './GroupQuota';
-import { usePrivacyMode, maskEmail, maskText } from '../../utils/privacy';
+import { usePrivacyMode, maskEmail } from '../../utils/privacy';
 import { getDisplayQuotaModels } from '../../config/modelConfig';
 import { getValidationBlockedStatusLabel } from './accountValidationStatus';
 import AccountSelection from './AccountSelection';
@@ -59,7 +59,6 @@ function AccountCard({
     const { config } = useConfigStore();
     const privacyMode = usePrivacyMode();
     const displayEmail = privacyMode ? maskEmail(account.email) : account.email;
-    const displayLabel = privacyMode ? maskText(account.custom_label) : account.custom_label;
 
     const isDisabled = Boolean(account.disabled);
     const validationBlockedLabel = getValidationBlockedStatusLabel(account.validation_blocked_reason, t);
@@ -162,7 +161,7 @@ function AccountCard({
                             {account.custom_label && (
                                 <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 text-[9px] font-bold shadow-sm border border-orange-200/50">
                                     <Tag className="w-2.5 h-2.5" />
-                                    {displayLabel}
+                                    {account.custom_label}
                                 </span>
                             )}
 

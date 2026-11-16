@@ -53,7 +53,7 @@ import { cn } from '../../utils/cn';
 import { useConfigStore } from '../../stores/useConfigStore';
 import { QuotaItem } from './QuotaItem';
 import { GroupQuota } from './GroupQuota';
-import { usePrivacyMode, maskEmail, maskText } from '../../utils/privacy';
+import { usePrivacyMode, maskEmail } from '../../utils/privacy';
 import { getDisplayQuotaModels } from '../../config/modelConfig';
 import { categorizeModel, getModelProtectionKey } from '../../utils/modelCategory';
 import { getValidationBlockedStatusLabel } from './accountValidationStatus';
@@ -316,7 +316,6 @@ function AccountRowContent({
     const { config } = useConfigStore();
     const privacyMode = usePrivacyMode();
     const displayEmail = privacyMode ? maskEmail(account.email) : account.email;
-    const displayLabel = privacyMode ? maskText(account.custom_label) : account.custom_label;
 
     const validationBlockedLabel = getValidationBlockedStatusLabel(account.validation_blocked_reason, t);
 
@@ -383,7 +382,7 @@ function AccountRowContent({
                         {account.custom_label && (
                             <span className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-300 text-[10px] font-bold shadow-sm border border-orange-200/50 dark:border-orange-800/50">
                                 <Tag className="w-2.5 h-2.5" />
-                                {displayLabel}
+                                {account.custom_label}
                             </span>
                         )}
 
