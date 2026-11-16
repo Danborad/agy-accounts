@@ -25,10 +25,12 @@ import secrets
 import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
+import glob
 import time
 import unicodedata
 import urllib.error
@@ -38,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.6.4"
+VERSION = "1.7.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -1432,6 +1434,262 @@ class Switcher:
         return ok
 
 
+
+# ---------------------------------------------------------------------------
+# 本地 Token 用量（读取 Antigravity 会话数据库）
+# ---------------------------------------------------------------------------
+
+def _pb_varint(data: bytes, pos: int) -> Tuple[Optional[int], int]:
+    value = 0
+    shift = 0
+    while pos < len(data):
+        byte = data[pos]
+        pos += 1
+        value |= (byte & 0x7F) << shift
+        if not byte & 0x80:
+            return value, pos
+        shift += 7
+    return None, pos
+
+
+def _pb_fields(data: bytes):
+    pos = 0
+    while pos < len(data):
+        key, pos = _pb_varint(data, pos)
+        if key is None:
+            return
+        number, wire = key >> 3, key & 7
+        if wire == 0:
+            value, pos = _pb_varint(data, pos)
+            yield number, wire, value
+        elif wire == 2:
+            length, pos = _pb_varint(data, pos)
+            if length is None or pos + length > len(data):
+                return
+            yield number, wire, data[pos:pos + length]
+            pos += length
+        elif wire == 1:
+            pos += 8
+        elif wire == 5:
+            pos += 4
+        else:
+            return
+
+
+def _pb_bytes(data: bytes, number: int) -> Optional[bytes]:
+    for key, wire, value in _pb_fields(data):
+        if key == number and wire == 2:
+            return value
+    return None
+
+
+def _pb_uint(data: bytes, number: int) -> Optional[int]:
+    for key, wire, value in _pb_fields(data):
+        if key == number and wire == 0:
+            return int(value)
+    return None
+
+
+def _usage_event(blob: bytes, step_timestamp: Optional[int]) -> Optional[Dict[str, Any]]:
+    wrapped = _pb_bytes(blob, 1)
+    if not wrapped:
+        return None
+    usage = _pb_bytes(wrapped, 4)
+    if not usage:
+        return None
+    system_tokens = _pb_uint(usage, 1) or 0
+    raw_input = _pb_uint(usage, 2) or 0
+    output = _pb_uint(usage, 3) or 0
+    cached = _pb_uint(usage, 5) or 0
+    input_tokens = system_tokens + raw_input
+    if raw_input == 0 and output == 0 and cached == 0 and input_tokens == 0:
+        return None
+    model_raw = _pb_bytes(wrapped, 21) or _pb_bytes(wrapped, 19)
+    model = model_raw.decode("utf-8", "replace").strip() if model_raw else "未知模型"
+    timestamp = None
+    timing = _pb_bytes(wrapped, 9)
+    if timing:
+        clock = _pb_bytes(timing, 4)
+        if clock:
+            timestamp = _pb_uint(clock, 1)
+    timestamp = timestamp or step_timestamp
+    if not timestamp or timestamp <= 0:
+        return None
+    return {
+        "model": model or "未知模型",
+        "input": input_tokens,
+        "output": output,
+        "cached": cached,
+        "total": input_tokens + output + cached,
+        "timestamp": int(timestamp),
+    }
+
+
+def _empty_totals() -> Dict[str, int]:
+    return {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0,
+            "total_tokens": 0, "request_count": 0}
+
+
+def _add_event(totals: Dict[str, int], event: Dict[str, Any]) -> None:
+    totals["input_tokens"] += event["input"]
+    totals["output_tokens"] += event["output"]
+    totals["cached_tokens"] += event["cached"]
+    totals["total_tokens"] += event["total"]
+    totals["request_count"] += 1
+
+
+class UsageStats:
+    """扫描 ~/.gemini/antigravity*/conversations/*.db，按时间与模型汇总。"""
+
+    def __init__(self, cfg: Dict[str, Any]):
+        self.cfg = cfg
+        self._lock = threading.Lock()
+        self._cached: Optional[Dict[str, Any]] = None
+        self._cached_at = 0.0
+
+    def _databases(self) -> List[str]:
+        home = os.path.expanduser("~")
+        patterns = [
+            os.path.join(home, ".gemini", "antigravity", "conversations", "*.db"),
+            os.path.join(home, ".gemini", "antigravity*", "conversations", "*.db"),
+        ]
+        found: List[str] = []
+        for pattern in patterns:
+            for path in glob.glob(pattern):
+                if path not in found:
+                    found.append(path)
+        return found
+
+    def _read_database(self, path: str) -> Tuple[List[Dict[str, Any]], int, bool]:
+        events: List[Dict[str, Any]] = []
+        scanned = 0
+        try:
+            uri = "file:%s?mode=ro" % urllib.parse.quote(path)
+            conn = sqlite3.connect(uri, uri=True, timeout=2)
+            try:
+                step_timestamps: List[Optional[int]] = []
+                try:
+                    for (metadata,) in conn.execute(
+                            "SELECT metadata FROM steps WHERE step_type = 15 ORDER BY idx"):
+                        value = None
+                        if isinstance(metadata, (bytes, bytearray)):
+                            stamp = _pb_bytes(bytes(metadata), 1)
+                            if stamp:
+                                value = _pb_uint(stamp, 1)
+                        step_timestamps.append(value)
+                except sqlite3.Error:
+                    pass
+                rows = conn.execute(
+                    "SELECT data, length(data) FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx"
+                ).fetchall()
+                for ordinal, (blob, size) in enumerate(rows):
+                    scanned += 1
+                    if not isinstance(blob, (bytes, bytearray)) or (size or 0) > 64 * 1024 * 1024:
+                        continue
+                    stamp = step_timestamps[ordinal] if ordinal < len(step_timestamps) else None
+                    event = _usage_event(bytes(blob), stamp)
+                    if event:
+                        events.append(event)
+            finally:
+                conn.close()
+            return events, scanned, True
+        except (sqlite3.Error, OSError):
+            return events, scanned, False
+
+    def _build(self) -> Dict[str, Any]:
+        now = dt.datetime.now()
+        today = now.date()
+        start_30 = today - dt.timedelta(days=29)
+        events: List[Dict[str, Any]] = []
+        databases = self._databases()
+        generations = 0
+        unreadable = 0
+        for path in databases:
+            found, scanned, ok = self._read_database(path)
+            generations += scanned
+            if not ok:
+                unreadable += 1
+            events.extend(found)
+
+        ranges = {
+            "today": today,
+            "yesterday": today - dt.timedelta(days=1),
+            "last_3_days": today - dt.timedelta(days=2),
+            "last_7_days": today - dt.timedelta(days=6),
+            "last_30_days": start_30,
+        }
+        totals = {name: _empty_totals() for name in ranges}
+        daily: Dict[str, Dict[str, int]] = {}
+        hourly: Dict[str, Dict[str, int]] = {}
+        by_model: Dict[str, Dict[str, Dict[str, int]]] = {name: {} for name in ranges}
+
+        for event in events:
+            moment = dt.datetime.fromtimestamp(event["timestamp"])
+            day = moment.date()
+            if day < start_30 or day > today:
+                continue
+            day_key = day.isoformat()
+            _add_event(daily.setdefault(day_key, _empty_totals()), event)
+            hour_key = "%s %02d:00" % (day_key, moment.hour)
+            _add_event(hourly.setdefault(hour_key, _empty_totals()), event)
+            for name, start in ranges.items():
+                if name == "today":
+                    if day != today:
+                        continue
+                elif name == "yesterday":
+                    if day != today - dt.timedelta(days=1):
+                        continue
+                elif day < start:
+                    continue
+                _add_event(totals[name], event)
+                bucket = by_model[name].setdefault(event["model"], _empty_totals())
+                _add_event(bucket, event)
+
+        def model_list(name: str) -> List[Dict[str, Any]]:
+            values = []
+            for model, value in by_model[name].items():
+                item = {"model": model}
+                item.update(value)
+                values.append(item)
+            values.sort(key=lambda item: item["total_tokens"], reverse=True)
+            return values
+
+        daily_list = [dict({"date": key}, **value) for key, value in sorted(daily.items())]
+        hourly_list = [dict({"hour": key}, **value) for key, value in sorted(hourly.items())]
+        last_activity = max((event["timestamp"] for event in events), default=0) or None
+
+        return {
+            "recent_performance": None,
+            "today": totals["today"],
+            "yesterday": totals["yesterday"],
+            "last_3_days": totals["last_3_days"],
+            "last_7_days": totals["last_7_days"],
+            "last_30_days": totals["last_30_days"],
+            "daily": daily_list,
+            "hourly": hourly_list,
+            "by_model_today": model_list("today"),
+            "by_model_yesterday": model_list("yesterday"),
+            "by_model_3_days": model_list("last_3_days"),
+            "by_model_7_days": model_list("last_7_days"),
+            "by_model": model_list("last_30_days"),
+            "databases_scanned": len(databases),
+            "generations_scanned": generations,
+            "skipped_large_records": 0,
+            "unreadable_databases": unreadable,
+            "last_activity": last_activity,
+            "generated_at": int(time.time()),
+        }
+
+    def get(self, force: bool = False) -> Dict[str, Any]:
+        with self._lock:
+            if not force and self._cached and time.time() - self._cached_at < 60:
+                return self._cached
+            result = self._build()
+            self._cached = result
+            self._cached_at = time.time()
+            return result
+
+
 # ---------------------------------------------------------------------------
 # HTTP 面板
 # ---------------------------------------------------------------------------
@@ -1581,6 +1839,12 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._require_auth()
                 self._json(200, self.app.status_payload())
                 return
+            if path == "/api/usage":
+                self._require_auth()
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                force = query.get("refresh", [""])[0] in ("1", "true", "yes")
+                self._json(200, dict(self.app.usage.get(force), ok=True))
+                return
             if path == "/api/quotas":
                 self._require_auth()
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -1709,6 +1973,7 @@ class App:
         self.limiter = LoginLimiter(int(cfg["login_max_failures"]), int(cfg["login_window"]))
         self.switcher = Switcher(cfg)
         self.quota = QuotaManager(cfg, self.switcher)
+        self.usage = UsageStats(cfg)
 
     def status_payload(self) -> Dict[str, Any]:
         accounts = list_accounts(self.cfg)

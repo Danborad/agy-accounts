@@ -303,7 +303,10 @@
       refresh_interval: 5,
       auto_sync: false,
       sync_interval: 5,
-      dashboard: { cards: ["account_status", "aggregate_quota"], order: ["account_status", "aggregate_quota"] },
+      dashboard: {
+        cards: ["total_tokens", "input_tokens", "output_tokens", "cache_hit_rate", "account_status", "aggregate_quota"],
+        order: ["total_tokens", "input_tokens", "output_tokens", "cache_hit_rate", "api_cost", "first_text_latency", "body_speed", "account_status", "aggregate_quota", "average_input"]
+      },
       desktop: { launch_at_login: false, hide_dock_icon: false, start_minimized: false },
       menu_bar: {
         quota_scope: "other", display_scope: "other", hide_unavailable: true,
@@ -327,8 +330,15 @@
     try {
       var saved = JSON.parse(localStorage.getItem(CONFIG_KEY) || "null");
       if (saved && typeof saved === "object") {
+        var savedDashboard = Object.assign({}, saved.dashboard || {});
+        if (Array.isArray(savedDashboard.cards) && savedDashboard.cards.length === 2 &&
+            savedDashboard.cards.indexOf("account_status") >= 0 &&
+            savedDashboard.cards.indexOf("aggregate_quota") >= 0) {
+          savedDashboard.cards = base.dashboard.cards.slice();
+          savedDashboard.order = base.dashboard.order.slice();
+        }
         return Object.assign(base, saved, {
-          dashboard: Object.assign(base.dashboard, saved.dashboard || {}),
+          dashboard: Object.assign(base.dashboard, savedDashboard),
           desktop: Object.assign(base.desktop, saved.desktop || {}),
           menu_bar: Object.assign(base.menu_bar, saved.menu_bar || {}),
           quota_protection: Object.assign(base.quota_protection, saved.quota_protection || {}),
@@ -552,7 +562,7 @@
           usd_to_cny_rate: 7.25, queried_at: Math.floor(Date.now() / 1000)
         };
       case "get_local_token_usage":
-        return usageSummary();
+        return api("/api/usage");
       case "get_api_pricing":
         return {
           prices: [], fetched_at: 0, stale: true, source: "unavailable",
@@ -787,7 +797,6 @@
   fetch("/api/status", { credentials: "same-origin" }).then(function (response) {
     if (response.ok) {
       document.documentElement.classList.remove("agy-gate");
-      addToolbar();
     } else {
       showLogin();
     }

@@ -82,6 +82,7 @@ Antigravity 在机器上的状态分三层：
 - 账号页工具栏「保存当前」按钮，直接保存当前登录快照
 - 隐私模式：一键把邮箱与备注打码为 `***@域名`，状态保存在浏览器本地
 - 账号状态与综合额度汇总卡片
+- 本地 Token 用量监控：今日 / 昨日 / 3 / 7 / 30 天、24 小时趋势、按模型统计
 - 保存当前登录为命名快照（右下角工具栏，自动识别邮箱）
 - 一键切换：停止 → 替换 → 启动 → 探测，全程串行
 - 失败自动回滚：任何一步出错都恢复原令牌并尽量拉起服务
@@ -93,7 +94,7 @@ Antigravity 在机器上的状态分三层：
 - 登录限速、CSRF 校验、跨站 Origin 拒绝、会话 Cookie 加固
 - Antigravity 网页汉化：8766 注入代理，`?no-i18n=1` 可关闭
 
-> 仪表盘中的 Token 用量、模型分布与费用估算暂未接入服务器本地数据库，当前显示为 0；账号状态与额度是真实数据。
+> Token 用量来自服务器上的 Antigravity 会话数据库，按本机全部会话统计；费用估算需要价格表，目前显示「未计价」。
 
 ## 系统架构
 
@@ -298,6 +299,7 @@ python3 agy_accounts.py --version
 | `POST` | `/api/logout` | 清除会话 |
 | `GET` | `/api/status` | 账号列表、当前标记、服务状态、切换状态 |
 | `GET` | `/api/quotas` | 各账号套餐与额度；`?refresh=1` 强制刷新 |
+| `GET` | `/api/usage` | 本地 Token 用量汇总；`?refresh=1` 绕过 60 秒缓存 |
 | `POST` | `/api/accounts` | `{"name":"..."}` 保存当前登录 |
 | `POST` | `/api/accounts/{id}/switch` | 切换账号 |
 | `POST` | `/api/accounts/{id}/rename` | `{"name":"..."}` 改显示名 |
@@ -338,6 +340,16 @@ python3 agy_accounts.py --version
 - 需要服务器能访问 `daily-cloudcode-pa.googleapis.com` 与 `oauth2.googleapis.com`。
 - 刷新使用 Antigravity 安装型 OAuth 客户端的公开凭据（Google 说明安装型应用密钥不属于机密），优先从 `language_server` 提取，并内置一份兼容回退。
 - 查询失败不会影响账号保存与切换；卡片会显示“额度暂不可用”或上一次缓存。
+
+## Token 用量
+
+仪表盘扫描 `~/.gemini/antigravity*/conversations/*.db`，解析 Antigravity 的生成记录，汇总：
+
+- 今日 / 昨日 / 近 3 / 7 / 30 天 Token
+- 24 小时趋势与按模型分布
+- 输入、输出、缓存 Token 与请求次数
+
+数据是**本机全部会话**的合计，不按登录账号拆分；只读数据库，不会修改会话。结果缓存 60 秒，页面「刷新」会强制重扫。费用估算暂未接入价格表，所以显示「未计价」。
 
 ## 故障排查
 
