@@ -698,7 +698,21 @@
       window.addEventListener("DOMContentLoaded", function () { showLogin(message); }, { once: true });
       return;
     }
-    document.documentElement.classList.add("agy-gate");
+    // 先同步读取服务端偏好，保证 React 首次渲染前就能拿到卡片设置。
+  try {
+    var prefRequest = new XMLHttpRequest();
+    prefRequest.open("GET", "/api/preferences", false);
+    prefRequest.withCredentials = true;
+    prefRequest.send(null);
+    if (prefRequest.status === 200) {
+      var prefPayload = JSON.parse(prefRequest.responseText || "{}");
+      if (prefPayload && prefPayload.preferences) serverPreferences = prefPayload.preferences;
+    }
+  } catch (e) {
+    console.warn("[agy-accounts] 读取服务端偏好失败：", e);
+  }
+
+  document.documentElement.classList.add("agy-gate");
     if (gate) {
       var note = gate.querySelector(".agy-gate-note");
       if (note && message) note.textContent = message;
