@@ -591,7 +591,6 @@
     bar.id = "agy-tools";
     bar.innerHTML = [
       '<button type="button" data-agy-action="save" title="把当前 Antigravity 登录保存为账号快照">保存当前登录</button>',
-      '<a href="/classic" title="打开经典面板（保存、重命名、删除）">经典面板</a>',
       '<button type="button" data-agy-action="logout" title="退出面板">退出</button>'
     ].join("");
     document.body.appendChild(bar);

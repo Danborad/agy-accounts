@@ -5,6 +5,8 @@ import {
   Download,
   Calendar,
   Clock,
+  Eye,
+  EyeOff,
   LayoutGrid,
   List,
   RefreshCw,
@@ -32,6 +34,7 @@ import { format } from "date-fns";
 import { saveAccountExport } from "../services/accountService";
 import type { Account } from "../types/account";
 import { getAccountTier, type AccountTier } from "../utils/accountTier";
+import { usePrivacyMode, togglePrivacyMode, maskEmail } from "../utils/privacy";
 
 type FilterType = "all" | AccountTier;
 type ViewMode = "list" | "grid";
@@ -41,6 +44,8 @@ export type QuotaWindow = "5h" | "weekly";
 function Accounts() {
   const { t } = useTranslation();
   const { config } = useConfigStore();
+  const privacyMode = usePrivacyMode();
+
   const {
     accounts,
     currentAccount,
@@ -425,11 +430,12 @@ function Accounts() {
         results.forEach((result, index) => {
           const id = ids[index];
           const email = accounts.find((a) => a.id === id)?.email || id;
+          const shownEmail = privacyMode ? maskEmail(email) : email;
           if (result.status === "fulfilled") {
             successCount++;
           } else {
             failedCount++;
-            details.push(`${email}: ${result.reason}`);
+            details.push(`${shownEmail}: ${result.reason}`);
           }
         });
       } else {
@@ -690,6 +696,20 @@ function Accounts() {
         {/* 操作按钮组 */}
         <div className="flex items-center gap-1.5 shrink-0">
           <button
+            className={`px-2.5 py-2 text-xs font-medium rounded-lg border transition-colors flex items-center gap-1.5 shadow-xs whitespace-nowrap shrink-0 ${
+              privacyMode
+                ? "bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border-amber-200/50 dark:border-amber-800/50"
+                : "bg-gray-50 dark:bg-base-200 text-gray-500 dark:text-gray-400 border-gray-200/60 dark:border-white/10 hover:text-gray-900 dark:hover:text-base-content"
+            }`}
+            onClick={togglePrivacyMode}
+            title={privacyMode ? "关闭隐私模式，显示完整邮箱" : "隐私模式：把邮箱打码为 ***"}
+            aria-pressed={privacyMode}
+          >
+            {privacyMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            <span className="hidden md:inline">{privacyMode ? "已打码" : "隐私"}</span>
+          </button>
+
+          <button
             className="px-2.5 py-2 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border border-emerald-200/50 dark:border-emerald-800/50 text-xs font-medium rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors flex items-center gap-1.5 shadow-xs whitespace-nowrap shrink-0"
             onClick={() => { void handleSaveCurrentLogin(); }}
             title="把当前 Antigravity 登录保存为账号快照"
@@ -854,7 +874,7 @@ function Accounts() {
         isOpen={accountToDelete !== null}
         title={t("accounts.dialog.delete_title")}
         message={accountToDelete
-          ? `${t("accounts.dialog.delete_msg")}\n\n${accountToDelete.email}`
+          ? `${t("accounts.dialog.delete_msg")}\n\n${privacyMode ? maskEmail(accountToDelete.email) : accountToDelete.email}`
           : undefined}
         type="confirm"
         confirmText={t("common.delete")}

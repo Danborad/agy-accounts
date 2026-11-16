@@ -38,10 +38,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.4.2"
+VERSION = "1.5.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-WEB_DIR = os.path.join(BASE_DIR, "web")
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
 
 STATIC_TYPES = {
@@ -1543,15 +1542,6 @@ class PanelHandler(BaseHTTPRequestHandler):
                 # React Router 的客户端路由，直接回首页由前端接管。
                 self._serve_app("index.html")
                 return
-            if path == "/classic":
-                self._serve_file("index.html", "text/html; charset=utf-8")
-                return
-            if path == "/favicon.svg":
-                self._serve_file("favicon.svg", "image/svg+xml")
-                return
-            if path == "/manifest.webmanifest":
-                self._serve_file("manifest.webmanifest", "application/manifest+json")
-                return
             if path in ("/icon.png", "/logo.png", "/tauri-shim.js") or path.startswith("/assets/"):
                 self._serve_app(path.lstrip("/"))
                 return
@@ -1646,13 +1636,6 @@ class PanelHandler(BaseHTTPRequestHandler):
             log.exception("DELETE 请求处理失败")
             self._error(500, "服务器内部错误")
 
-    def _serve_file(self, name: str, content_type: str) -> None:
-        path = os.path.join(WEB_DIR, name)
-        data = read_bytes(path)
-        if data is None:
-            raise ApiError(500, "面板静态文件缺失：%s" % name)
-        self._send(200, data, content_type, self._security_headers())
-
     def _serve_app(self, name: str) -> None:
         root = os.path.realpath(WEBAPP_DIR)
         path = os.path.realpath(os.path.join(root, name))
@@ -1739,8 +1722,6 @@ def ensure_runtime(cfg: Dict[str, Any]) -> None:
             "或使用环境变量 AGY_ACCOUNTS_PASSWORD。\n"
             "生成密码哈希：python3 %s hash-password" % os.path.basename(__file__)
         )
-    if not os.path.isfile(os.path.join(WEB_DIR, "index.html")):
-        raise SystemExit("拒绝启动：缺少面板文件 %s" % os.path.join(WEB_DIR, "index.html"))
     if not os.path.isfile(os.path.join(WEBAPP_DIR, "index.html")):
         raise SystemExit("拒绝启动：缺少前端文件 %s" % os.path.join(WEBAPP_DIR, "index.html"))
     ensure_dir(cfg["accounts_dir"], 0o700)
@@ -1854,8 +1835,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     writable = os.access(cfg["accounts_dir"] if os.path.isdir(cfg["accounts_dir"])
                          else os.path.dirname(cfg["accounts_dir"]), os.W_OK)
     line(writable, "账号目录可写")
-    line(os.path.isfile(os.path.join(WEB_DIR, "index.html")), "经典面板文件存在", WEB_DIR)
-    line(os.path.isfile(os.path.join(WEBAPP_DIR, "index.html")), "新版前端文件存在", WEBAPP_DIR)
+    line(os.path.isfile(os.path.join(WEBAPP_DIR, "index.html")), "前端文件存在", WEBAPP_DIR)
     commands = service_commands(cfg)
     for key in ("stop", "start", "status"):
         executable = shutil.which(commands[key][0])

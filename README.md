@@ -11,7 +11,7 @@
   <img src="docs/assets/ui-accounts.png" width="620" alt="账号管理">
 </div>
 
-> 根路径使用基于 [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch) 前端的完整界面；轻量经典面板保留在 `/classic`。
+> 界面基于 [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch) 前端，已移除旧的轻量面板。
 
 ---
 
@@ -76,6 +76,7 @@ Antigravity 在机器上的状态分三层：
 - 分组额度：Claude 5h、Gemini 5h、Claude 周额度、Gemini 周额度
 - 列表视图 2×2 汇总条，卡片视图单列；剩余百分比与重置倒计时
 - 账号页工具栏「保存当前」按钮，直接保存当前登录快照
+- 隐私模式：一键把邮箱与备注打码为 `***@域名`，状态保存在浏览器本地
 - 账号状态与综合额度汇总卡片
 - 保存当前登录为命名快照（右下角工具栏，自动识别邮箱）
 - 一键切换：停止 → 替换 → 启动 → 探测，全程串行
@@ -86,7 +87,7 @@ Antigravity 在机器上的状态分三层：
 - 切换成功后可由配置决定跳转 Antigravity
 - 运行时仅依赖 Python 3.9+ 标准库；前端是已构建的静态文件
 - 登录限速、CSRF 校验、跨站 Origin 拒绝、会话 Cookie 加固
-- 经典轻量面板保留在 `/classic`，用于排障与对照
+- 隐私模式：点账号页的“小眼睛”，邮箱与备注显示为 `***@域名`
 
 > 仪表盘中的 Token 用量、模型分布与费用估算暂未接入服务器本地数据库，当前显示为 0；账号状态与额度是真实数据。
 
@@ -96,7 +97,6 @@ Antigravity 在机器上的状态分三层：
 手机 / 电脑浏览器
       │
       ├── http://127.0.0.1:8790/        agy-accounts 新版 UI
-      ├── http://127.0.0.1:8790/classic 经典面板
       │        │  systemctl stop/start agy-server
       │        └── 替换 ~/.gemini/jetski-standalone-oauth-token
       │
@@ -166,8 +166,8 @@ sudo ./install.sh \
 安装完成后打开 `http://127.0.0.1:8790/`，输入安装时设置的密码。
 
 - `/`：完整界面（账号管理、仪表盘、设置）
-- `/classic`：轻量经典面板
-- 右下角工具栏提供「保存当前登录」「经典面板」「退出」
+- 账号页工具栏提供「隐私」小眼睛与「保存当前」
+- 右下角工具栏提供「保存当前登录」与「退出」
 
 ### 第一次使用
 

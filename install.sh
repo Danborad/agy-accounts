@@ -116,9 +116,8 @@ HASH=""
 
 info "安装到 ${PREFIX}"
 install -d -m 0755 "${PREFIX}"
+rm -rf "${PREFIX}/web"
 install -m 0755 "${SRC}/agy_accounts.py" "${PREFIX}/agy_accounts.py"
-install -d -m 0755 "${PREFIX}/web"
-install -m 0644 "${SRC}"/web/* "${PREFIX}/web/"
 if [[ -d "${SRC}/webapp" ]]; then
   rm -rf "${PREFIX}/webapp"
   cp -a "${SRC}/webapp" "${PREFIX}/webapp"

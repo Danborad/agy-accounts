@@ -21,7 +21,11 @@ vendored so that `agy-accounts` can serve the same UI from its Python backend.
   (Claude/Gemini × 5h/weekly).
 - `src/components/accounts/AccountCard.tsx` and `AccountTable.tsx`: render the
   group quota component; the original per-model view is kept hidden.
-- `src/pages/Accounts.tsx`: added the "保存当前" snapshot button.
+- `src/pages/Accounts.tsx`: added the "保存当前" snapshot button and the
+  privacy-mode eye toggle.
+- `src/utils/privacy.ts`: new localStorage-backed privacy mode and email mask.
+- `AccountCard.tsx` / `AccountTable.tsx`: mask email and custom label when
+  privacy mode is on.
 - Rust backend (`src-tauri/`) is **not** included; desktop-only commands are
   implemented or rejected by the bridge.
 - Built output lives in `../webapp/`.
