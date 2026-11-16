@@ -7,14 +7,14 @@
 > 本项目不是 `agy-server` 的替代品，也不修改它。`agy-server` 负责网页界面与鉴权，本面板只管理 `language_server` 使用的 OAuth 令牌文件。
 
 <div align="center">
-  <img src="docs/assets/ui-dashboard.png" width="620" alt="仪表盘">
-  <img src="docs/assets/ui-accounts.png" width="620" alt="账号管理">
+  <img src="docs/assets/ui-dashboard-demo.png" width="620" alt="仪表盘">
+  <img src="docs/assets/ui-accounts-demo.png" width="620" alt="账号管理">
 </div>
 
 > 界面基于 [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch) 前端，已移除旧的轻量面板。
 
 <div align="center">
-  <img src="docs/assets/ui-i18n.png" width="620" alt="Antigravity 网页汉化">
+  <img src="docs/assets/ui-i18n-demo.png" width="620" alt="Antigravity 网页汉化">
 </div>
 
 ---
@@ -77,7 +77,7 @@ Antigravity 在机器上的状态分三层：
 - 账号列表：邮箱、套餐、当前标记、备注、最后使用时间、拖拽排序
 - 当前账号判定：令牌字节一致，或 `refresh_token` 相同（应对 access_token 轮换）
 - 每个已保存账号的套餐（Free / Pro / Ultra / Standard）与额度
-- 分组额度：Claude 5h、Gemini 5h、Claude 周额度、Gemini 周额度
+- 分组额度：Claude 5h、Gemini 5h、Claude 周额度、Gemini 周额度，以及账号可用的 Gemini 4 Argon / Carbon 等独立额度
 - 列表视图 2×2 汇总条，卡片视图单列；剩余百分比与重置倒计时
 - 账号页工具栏「保存当前」按钮，直接保存当前登录快照
 - 隐私模式：一键把邮箱与备注打码为 `***@域名`，状态保存在浏览器本地

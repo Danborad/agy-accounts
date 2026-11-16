@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.6.4] - 2026-11-16
+
+### 修复
+
+- 额度分组识别 Gemini 4 Argon / Carbon / Hydrogen，不再并入 Gemini 通用额度
+- 账号卡片与列表增加独立的 Argon 周额度条目
+- 额度缓存版本升级到 3
+- README 截图替换为脱敏演示数据，并清理历史截图
+- 版本 1.6.4
+
 ## [1.6.3] - 2026-11-16
 
 ### 调整

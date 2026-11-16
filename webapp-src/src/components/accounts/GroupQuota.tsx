@@ -3,7 +3,7 @@ import type { Account, QuotaData } from "../../types/account";
 import { cn } from "../../utils/cn";
 
 type Window = "5h" | "weekly";
-type Family = "claude" | "gemini";
+type Family = "claude" | "gemini" | "argon" | "carbon" | "hydrogen";
 
 interface Row {
     key: string;
@@ -11,10 +11,14 @@ interface Row {
     window: Window;
     remaining: number | null;
     resetTime: string;
+    label?: string;
 }
 
 function familyOf(value: string): Family | null {
     const text = (value || "").toLowerCase();
+    if (text.includes("argon")) return "argon";
+    if (text.includes("carbon")) return "carbon";
+    if (text.includes("hydrogen")) return "hydrogen";
     if (text.includes("claude") || text.includes("gpt") || text.startsWith("3p")) return "claude";
     if (text.includes("gemini")) return "gemini";
     return null;
@@ -41,18 +45,22 @@ function buildRows(quota?: QuotaData): Row[] {
         for (const bucket of group.buckets || []) {
             const window = windowOf(bucket.window) || windowOf(bucket.bucket_id);
             if (!window) continue;
-            const key = `${family}-${window}`;
-            const value = percentage(bucket.remaining_fraction, bucket.remaining_fraction_known);
-            const existing = rows.get(key);
-            if (!existing || (existing.remaining === null && value !== null)) {
-                rows.set(key, {
-                    key,
-                    family,
-                    window,
-                    remaining: value,
-                    resetTime: bucket.reset_time || "",
-                });
+            let key = `${family}-${window}`;
+            let suffix = 2;
+            while (rows.has(key)) {
+                key = `${family}-${window}-${suffix}`;
+                suffix += 1;
             }
+            const value = percentage(bucket.remaining_fraction, bucket.remaining_fraction_known);
+            const isPrimary = family === "claude" || family === "gemini";
+            rows.set(key, {
+                key,
+                family,
+                window,
+                remaining: value,
+                resetTime: bucket.reset_time || "",
+                label: isPrimary ? undefined : (group.display_name || family),
+            });
         }
     }
 
@@ -83,19 +91,22 @@ function buildRows(quota?: QuotaData): Row[] {
         }
     }
 
-    const order: Array<[Family, Window]> = [
+    const mainOrder: Array<[Family, Window]> = [
         ["claude", "5h"],
         ["gemini", "5h"],
         ["claude", "weekly"],
         ["gemini", "weekly"],
     ];
-    return order.map(([family, window]) => rows.get(`${family}-${window}`) || {
+    const mainKeys = new Set(mainOrder.map(([family, window]) => `${family}-${window}`));
+    const main = mainOrder.map(([family, window]) => rows.get(`${family}-${window}`) || {
         key: `${family}-${window}`,
         family,
         window,
         remaining: null,
         resetTime: "",
     });
+    const extras = Array.from(rows.values()).filter((row) => !mainKeys.has(row.key));
+    return [...main, ...extras];
 }
 
 function resetLabel(iso: string): string {
@@ -140,7 +151,9 @@ export function GroupQuota({ account, columns = 2 }: { account: Account; columns
         <div className={cn("grid grid-cols-1 gap-2 w-full", columns === 2 && "md:grid-cols-2")}>
             {rows.map((row) => {
                 const Icon = row.family === "claude" ? BrainCircuit : Sparkles;
-                const label = `${row.family === "claude" ? "Claude" : "Gemini"} ${row.window === "5h" ? "5h" : "周额度"}`;
+                const label = row.label
+                    ? `${row.label} · ${row.window === "5h" ? "5 小时" : "周额度"}`
+                    : `${row.family === "claude" ? "Claude" : "Gemini"} ${row.window === "5h" ? "5h" : "周额度"}`;
                 const rounded = row.remaining === null ? null : Math.round(row.remaining);
                 const reset = resetLabel(row.resetTime);
                 return (

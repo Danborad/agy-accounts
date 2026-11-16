@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.6.3"
+VERSION = "1.6.4"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -651,7 +651,18 @@ def normalize_quota(load_code: Dict[str, Any], summary: Dict[str, Any],
             continue
         label = str(group.get("displayName") or "")
         low = label.lower()
-        key = "gemini" if "gemini" in low else ("claude" if "claude" in low else "other")
+        if "argon" in low:
+            key = "argon"
+        elif "carbon" in low:
+            key = "carbon"
+        elif "hydrogen" in low:
+            key = "hydrogen"
+        elif "gemini" in low:
+            key = "gemini"
+        elif "claude" in low or "gpt" in low:
+            key = "claude"
+        else:
+            key = "other"
         windows: Dict[str, Any] = {}
         buckets = group.get("buckets") if isinstance(group.get("buckets"), list) else []
         for bucket in buckets:
@@ -779,13 +790,13 @@ class QuotaManager:
         self._cache: Dict[str, Any] = {}
         stored = read_json(self.cache_path)
         accounts = stored.get("accounts")
-        if stored.get("version") == 2 and isinstance(accounts, dict):
+        if stored.get("version") == 3 and isinstance(accounts, dict):
             self._cache = accounts
 
     # -- 缓存 ------------------------------------------------------------
 
     def _save_cache(self) -> None:
-        write_json_atomic(self.cache_path, {"version": 2, "accounts": self._cache}, 0o600)
+        write_json_atomic(self.cache_path, {"version": 3, "accounts": self._cache}, 0o600)
 
     def _cached(self, account_id: str) -> Optional[Dict[str, Any]]:
         entry = self._cache.get(account_id)
