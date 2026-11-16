@@ -300,6 +300,7 @@ python3 agy_accounts.py --version
 | `GET` | `/api/status` | 账号列表、当前标记、服务状态、切换状态 |
 | `GET` | `/api/quotas` | 各账号套餐与额度；`?refresh=1` 强制刷新 |
 | `GET` | `/api/usage` | 本地 Token 用量汇总；`?refresh=1` 绕过 60 秒缓存 |
+| `GET/POST` | `/api/preferences` | 服务端保存首页卡片选择 |
 | `POST` | `/api/accounts` | `{"name":"..."}` 保存当前登录 |
 | `POST` | `/api/accounts/{id}/switch` | 切换账号 |
 | `POST` | `/api/accounts/{id}/rename` | `{"name":"..."}` 改显示名 |

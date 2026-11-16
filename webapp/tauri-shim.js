@@ -30,6 +30,7 @@
   var quotaTimer = null;
   var quotaInflight = null;
   var quotaRefreshAt = 0;
+  var serverPreferences = null;
 
   try { localStorage.setItem(THEME_KEY, "dark"); } catch (e) {}
 
@@ -367,9 +368,11 @@
           network: Object.assign(base.network, saved.network || {}),
           quota_valuation: Object.assign(base.quota_valuation, saved.quota_valuation || {})
         });
-        var override = loadDashboardOverride();
+        var serverDashboard = serverPreferences && serverPreferences.dashboard;
+        var override = serverDashboard && Array.isArray(serverDashboard.cards) &&
+            Array.isArray(serverDashboard.order) ? serverDashboard : loadDashboardOverride();
         if (override) {
-          result.dashboard = override;
+          result.dashboard = { cards: override.cards.slice(), order: override.order.slice() };
         } else if (!result.dashboard.cards || result.dashboard.cards.length === 0) {
           result.dashboard.cards = DEFAULT_DASHBOARD_CARDS.slice();
           result.dashboard.order = DEFAULT_DASHBOARD_CARDS.slice();
@@ -377,8 +380,10 @@
         return result;
       }
     } catch (e) {}
-    var fallback = loadDashboardOverride();
-    if (fallback) base.dashboard = fallback;
+    var serverDashboard = serverPreferences && serverPreferences.dashboard;
+    var fallback = serverDashboard && Array.isArray(serverDashboard.cards) &&
+        Array.isArray(serverDashboard.order) ? serverDashboard : loadDashboardOverride();
+    if (fallback) base.dashboard = { cards: fallback.cards.slice(), order: fallback.order.slice() };
     return base;
   }
 
@@ -640,6 +645,15 @@
         dashboardConfig.dashboard = { cards: cards, order: order };
         saveConfig(dashboardConfig);
         saveDashboardOverride(dashboardConfig.dashboard);
+        serverPreferences = { dashboard: { cards: cards.slice(), order: order.slice() } };
+        try {
+          await api("/api/preferences", {
+            method: "POST",
+            body: JSON.stringify(serverPreferences)
+          });
+        } catch (error) {
+          console.warn("[agy-accounts] 保存卡片设置到服务器失败：", error);
+        }
         return dashboardConfig.dashboard;
       }
       case "set_desktop_preferences":
@@ -913,12 +927,21 @@
 
   document.documentElement.classList.add("agy-gate");
   fetch("/api/status", { credentials: "same-origin" }).then(function (response) {
-    if (response.ok) {
-      document.documentElement.classList.remove("agy-gate");
-      installCostHider();
-    } else {
+    if (!response.ok) {
       showLogin();
+      return null;
     }
+    return fetch("/api/preferences", { credentials: "same-origin" })
+      .then(function (prefsResponse) {
+        return prefsResponse.ok ? prefsResponse.json() : null;
+      })
+      .catch(function () { return null; })
+      .then(function (data) {
+        if (data && data.preferences) serverPreferences = data.preferences;
+        document.documentElement.classList.remove("agy-gate");
+        installCostHider();
+        window.setTimeout(function () { emitEvent("config://updated", {}); }, 400);
+      });
   }).catch(function () {
     showLogin("无法连接面板服务。");
   });

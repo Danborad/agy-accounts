@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.7.6"
+VERSION = "1.8.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -273,6 +273,42 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
     cfg["language_server_path"] = expand_path(cfg.get("language_server_path") or
                                                "/opt/agy-server/language_server")
     return cfg
+
+
+def preferences_path(cfg: Dict[str, Any]) -> str:
+    return os.path.join(cfg["config_home"], "preferences.json")
+
+
+def load_preferences(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    data = read_json(preferences_path(cfg))
+    dashboard = data.get("dashboard")
+    if isinstance(dashboard, dict):
+        cards = dashboard.get("cards")
+        order = dashboard.get("order")
+        if isinstance(cards, list) and isinstance(order, list):
+            return {"dashboard": {
+                "cards": [str(x) for x in cards][:50],
+                "order": [str(x) for x in order][:50],
+            }}
+    return {}
+
+
+def save_preferences(cfg: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
+    dashboard = data.get("dashboard")
+    if not isinstance(dashboard, dict):
+        raise ApiError(400, "preferences.dashboard 必须是对象")
+    cards = dashboard.get("cards")
+    order = dashboard.get("order")
+    if not isinstance(cards, list) or not isinstance(order, list):
+        raise ApiError(400, "dashboard.cards 与 dashboard.order 必须是数组")
+    if len(cards) > 50 or len(order) > 50:
+        raise ApiError(400, "卡片数量过多")
+    payload = {"dashboard": {
+        "cards": [str(x)[:80] for x in cards],
+        "order": [str(x)[:80] for x in order],
+    }}
+    write_json_atomic(preferences_path(cfg), payload, 0o600)
+    return payload
 
 
 def command_list(cfg: Dict[str, Any], key: str, default: List[str]) -> List[str]:
@@ -1839,6 +1875,10 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._require_auth()
                 self._json(200, self.app.status_payload())
                 return
+            if path == "/api/preferences":
+                self._require_auth()
+                self._json(200, {"ok": True, "preferences": load_preferences(self.app.cfg)})
+                return
             if path == "/api/usage":
                 self._require_auth()
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -1879,6 +1919,10 @@ class PanelHandler(BaseHTTPRequestHandler):
                 if self.app.cfg.get("cookie_secure"):
                     expired += "; Secure"
                 self._json(200, {"ok": True}, {"Set-Cookie": expired})
+                return
+            if path == "/api/preferences":
+                body = self._read_body()
+                self._json(200, {"ok": True, "preferences": save_preferences(self.app.cfg, body)})
                 return
             if path == "/api/accounts":
                 body = self._read_body()

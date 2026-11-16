@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.8.0] - 2026-11-16
+
+### 修复
+
+- 首页卡片设置改为服务端持久化 `/api/preferences`，不再依赖浏览器 localStorage
+- 清缓存、换浏览器、重复刷新都不会丢失卡片选择
+- 保留 localStorage 作为离线回退
+- 版本 1.8.0
+
 ## [1.7.6] - 2026-11-16
 
 ### 修复
