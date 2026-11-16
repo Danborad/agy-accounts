@@ -598,7 +598,14 @@
       case "set_active_oauth_client":
       case "set_window_theme":
       case "set_app_translation":
-      case "set_dashboard_cards":
+      case "set_dashboard_cards": {
+        var dashboardConfig = loadConfig();
+        var cards = Array.isArray(args.cards) ? args.cards : [];
+        var order = Array.isArray(args.order) ? args.order : cards;
+        dashboardConfig.dashboard = { cards: cards, order: order };
+        saveConfig(dashboardConfig);
+        return dashboardConfig.dashboard;
+      }
       case "set_desktop_preferences":
       case "set_menu_bar_preferences":
       case "open_data_folder":
