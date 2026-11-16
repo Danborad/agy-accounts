@@ -12,6 +12,11 @@
   "use strict";
 
   var CONFIG_KEY = "agy-accounts-web-config";
+  var DASHBOARD_KEY = "agy-accounts-dashboard-preferences";
+  var DEFAULT_DASHBOARD_CARDS = [
+    "total_tokens", "input_tokens", "output_tokens", "cache_hit_rate",
+    "account_status", "aggregate_quota"
+  ];
   var ORDER_KEY = "agy-accounts-web-order";
   var THEME_KEY = "app-theme-preference";
 
@@ -325,6 +330,22 @@
     };
   }
 
+  function loadDashboardOverride() {
+    try {
+      var value = JSON.parse(localStorage.getItem(DASHBOARD_KEY) || "null");
+      if (value && Array.isArray(value.cards) && Array.isArray(value.order)) {
+        return { cards: value.cards.slice(), order: value.order.slice() };
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function saveDashboardOverride(dashboard) {
+    try {
+      localStorage.setItem(DASHBOARD_KEY, JSON.stringify({ cards: dashboard.cards, order: dashboard.order }));
+    } catch (e) {}
+  }
+
   function loadConfig() {
     var base = defaultConfig();
     try {
@@ -337,7 +358,7 @@
           savedDashboard.cards = base.dashboard.cards.slice();
           savedDashboard.order = base.dashboard.order.slice();
         }
-        return Object.assign(base, saved, {
+        var result = Object.assign(base, saved, {
           dashboard: Object.assign(base.dashboard, savedDashboard),
           desktop: Object.assign(base.desktop, saved.desktop || {}),
           menu_bar: Object.assign(base.menu_bar, saved.menu_bar || {}),
@@ -346,8 +367,18 @@
           network: Object.assign(base.network, saved.network || {}),
           quota_valuation: Object.assign(base.quota_valuation, saved.quota_valuation || {})
         });
+        var override = loadDashboardOverride();
+        if (override) {
+          result.dashboard = override;
+        } else if (!result.dashboard.cards || result.dashboard.cards.length === 0) {
+          result.dashboard.cards = DEFAULT_DASHBOARD_CARDS.slice();
+          result.dashboard.order = DEFAULT_DASHBOARD_CARDS.slice();
+        }
+        return result;
       }
     } catch (e) {}
+    var fallback = loadDashboardOverride();
+    if (fallback) base.dashboard = fallback;
     return base;
   }
 
@@ -435,9 +466,13 @@
     switch (cmd) {
       case "load_config":
         return loadConfig();
-      case "save_config":
-        saveConfig(args.config || {});
+      case "save_config": {
+        var savedConfig = args.config || {};
+        var dashboardOverride = loadDashboardOverride();
+        if (dashboardOverride) savedConfig.dashboard = dashboardOverride;
+        saveConfig(savedConfig);
         return null;
+      }
       case "list_accounts": {
         var snapshot = await loadSnapshot(false);
         return { accounts: mapAccounts(snapshot.status, snapshot.quotas.quotas) };
@@ -604,6 +639,7 @@
         var order = Array.isArray(args.order) ? args.order : cards;
         dashboardConfig.dashboard = { cards: cards, order: order };
         saveConfig(dashboardConfig);
+        saveDashboardOverride(dashboardConfig.dashboard);
         return dashboardConfig.dashboard;
       }
       case "set_desktop_preferences":
