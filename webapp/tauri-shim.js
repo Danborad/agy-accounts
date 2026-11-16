@@ -371,7 +371,7 @@
         var serverDashboard = serverPreferences && serverPreferences.dashboard;
         var override = serverDashboard && Array.isArray(serverDashboard.cards) &&
             Array.isArray(serverDashboard.order) ? serverDashboard : loadDashboardOverride();
-        if (override) {
+        if (override && override.cards.length > 0) {
           result.dashboard = { cards: override.cards.slice(), order: override.order.slice() };
         } else if (!result.dashboard.cards || result.dashboard.cards.length === 0) {
           result.dashboard.cards = DEFAULT_DASHBOARD_CARDS.slice();
@@ -383,7 +383,9 @@
     var serverDashboard = serverPreferences && serverPreferences.dashboard;
     var fallback = serverDashboard && Array.isArray(serverDashboard.cards) &&
         Array.isArray(serverDashboard.order) ? serverDashboard : loadDashboardOverride();
-    if (fallback) base.dashboard = { cards: fallback.cards.slice(), order: fallback.order.slice() };
+    if (fallback && fallback.cards.length > 0) {
+      base.dashboard = { cards: fallback.cards.slice(), order: fallback.order.slice() };
+    }
     return base;
   }
 
@@ -945,17 +947,9 @@
       showLogin();
       return null;
     }
-    return fetch("/api/preferences", { credentials: "same-origin" })
-      .then(function (prefsResponse) {
-        return prefsResponse.ok ? prefsResponse.json() : null;
-      })
-      .catch(function () { return null; })
-      .then(function (data) {
-        if (data && data.preferences) serverPreferences = data.preferences;
-        document.documentElement.classList.remove("agy-gate");
-        installCostHider();
-        window.setTimeout(function () { emitEvent("config://updated", {}); }, 400);
-      });
+    document.documentElement.classList.remove("agy-gate");
+    installCostHider();
+    return null;
   }).catch(function () {
     showLogin("无法连接面板服务。");
   });

@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.8.1"
+VERSION = "1.8.2"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -293,6 +293,13 @@ def load_preferences(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+DEFAULT_DASHBOARD_CARDS = ["total_tokens", "input_tokens", "output_tokens",
+                           "cache_hit_rate", "account_status", "aggregate_quota"]
+DEFAULT_DASHBOARD_ORDER = ["total_tokens", "input_tokens", "output_tokens",
+                           "cache_hit_rate", "first_text_latency", "body_speed",
+                           "account_status", "aggregate_quota", "average_input"]
+
+
 def save_preferences(cfg: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any]:
     dashboard = data.get("dashboard")
     if not isinstance(dashboard, dict):
@@ -303,10 +310,13 @@ def save_preferences(cfg: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any
         raise ApiError(400, "dashboard.cards 与 dashboard.order 必须是数组")
     if len(cards) > 50 or len(order) > 50:
         raise ApiError(400, "卡片数量过多")
-    payload = {"dashboard": {
-        "cards": [str(x)[:80] for x in cards],
-        "order": [str(x)[:80] for x in order],
-    }}
+    cards = [str(x)[:80] for x in cards]
+    order = [str(x)[:80] for x in order]
+    # 空选择通常是前端竞态或旧标签页写回；个人自用场景直接恢复默认。
+    if not cards:
+        cards = list(DEFAULT_DASHBOARD_CARDS)
+        order = list(DEFAULT_DASHBOARD_ORDER)
+    payload = {"dashboard": {"cards": cards, "order": order}}
     write_json_atomic(preferences_path(cfg), payload, 0o600)
     return payload
 
