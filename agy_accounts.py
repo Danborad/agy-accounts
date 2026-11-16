@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -966,10 +966,28 @@ class QuotaManager:
             log.exception("额度查询出现未预期错误 id=%s", account_id)
             return {"status": "error", "error": "查询失败：%s" % exc.__class__.__name__}
 
-    def get_all(self, force: bool = False) -> Dict[str, Any]:
+    def get_all(self, force: bool = False, cache_only: bool = False) -> Dict[str, Any]:
         # 串行刷新，避免同一令牌被并发刷新或重复打 Google 接口。
         with self._fetch_lock:
             quotas: Dict[str, Any] = {}
+            if cache_only:
+                for account in list_accounts(self.cfg):
+                    account_id = str(account["id"])
+                    path = account_dir(self.cfg, account_id)
+                    raw = read_bytes(account_token_path(path))
+                    if not raw:
+                        quotas[account_id] = {"status": "loading"}
+                        continue
+                    key = cache_key(raw)
+                    entry = self._cached(account_id)
+                    if entry and entry.get("key") == key and isinstance(entry.get("quota"), dict):
+                        quota = dict(entry["quota"])
+                        quota.update({"status": "ok", "cached": True,
+                                      "fetched_at": int(entry.get("at") or 0)})
+                        quotas[account_id] = quota
+                    else:
+                        quotas[account_id] = {"status": "loading"}
+                return {"quotas": quotas, "fetched_at": now()}
             for account in list_accounts(self.cfg):
                 quotas[str(account["id"])] = self._fetch_one(account, force)
             return {"quotas": quotas, "fetched_at": now()}
@@ -1556,7 +1574,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._require_auth()
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                 force = query.get("refresh", [""])[0] in ("1", "true", "yes")
-                self._json(200, dict(self.app.quota.get_all(force), ok=True))
+                cache_only = query.get("cached", [""])[0] in ("1", "true", "yes")
+                self._json(200, dict(self.app.quota.get_all(force, cache_only), ok=True))
                 return
             raise ApiError(404, "未找到该页面")
         except ApiError as exc:

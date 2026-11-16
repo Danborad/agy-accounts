@@ -17,8 +17,14 @@
 
   var callbacks = {};
   var nextCallback = 1;
+  var eventListeners = new Map();
+  var eventIds = new Map();
+  var nextEventId = 1;
   var cache = { at: 0, status: null, quotas: null };
   var inflight = null;
+  var quotaTimer = null;
+  var quotaInflight = null;
+  var quotaRefreshAt = 0;
 
   try { localStorage.setItem(THEME_KEY, "dark"); } catch (e) {}
 
@@ -49,13 +55,57 @@
     });
   }
 
+  function emitEvent(event, payload) {
+    var ids = eventListeners.get(event);
+    if (!ids) return;
+    ids.forEach(function (eventId) {
+      var meta = eventIds.get(eventId);
+      if (!meta) return;
+      var callback = callbacks[meta.handler];
+      if (typeof callback !== "function") return;
+      try {
+        callback({ event: event, id: eventId, payload: payload });
+      } catch (error) {
+        console.warn("[agy-accounts] event handler failed:", event, error);
+      }
+    });
+  }
+
+  function scheduleQuotaRefresh() {
+    if (!cache.status || quotaTimer || quotaInflight) return;
+    var quotas = (cache.quotas && cache.quotas.quotas) || {};
+    var now = Date.now();
+    var needsRefresh = Object.keys(quotas).some(function (id) {
+      var quota = quotas[id];
+      if (!quota || quota.status === "loading" || !quota.fetched_at) return true;
+      return now - Number(quota.fetched_at) * 1000 > 120000;
+    });
+    if (!needsRefresh && now - quotaRefreshAt < 60000) return;
+    quotaRefreshAt = now;
+    quotaTimer = window.setTimeout(function () {
+      quotaTimer = null;
+      quotaInflight = api("/api/quotas")
+        .then(function (data) {
+          cache.quotas = data;
+          cache.at = Date.now();
+          emitEvent("accounts://refreshed", {});
+        })
+        .catch(function () {})
+        .finally(function () {
+          quotaInflight = null;
+        });
+    }, 200);
+  }
+
   function loadSnapshot(forceQuota) {
     if (inflight && !forceQuota) return inflight;
+    var quotaPath = forceQuota ? "/api/quotas?refresh=1" : "/api/quotas?cached=1";
     inflight = Promise.all([
       api("/api/status"),
-      api("/api/quotas" + (forceQuota ? "?refresh=1" : ""))
+      api(quotaPath)
     ]).then(function (values) {
       cache = { at: Date.now(), status: values[0], quotas: values[1] };
+      if (!forceQuota) scheduleQuotaRefresh();
       return cache;
     }).finally(function () {
       inflight = null;
@@ -337,7 +387,27 @@
   async function bridge(cmd, args) {
     args = args || {};
     if (cmd.indexOf("plugin:event|") === 0) {
-      return cmd.indexOf("|listen") >= 0 ? nextCallback++ : null;
+      if (cmd.indexOf("|listen") >= 0) {
+        var eventName = String(args.event || "");
+        var handler = args.handler;
+        var eventId = nextEventId++;
+        var list = eventListeners.get(eventName) || new Set();
+        list.add(eventId);
+        eventListeners.set(eventName, list);
+        eventIds.set(eventId, { event: eventName, handler: handler });
+        return eventId;
+      }
+      if (cmd.indexOf("|unlisten") >= 0) {
+        var removeId = args.eventId;
+        var meta = eventIds.get(removeId);
+        if (meta) {
+          var listeners = eventListeners.get(meta.event);
+          if (listeners) listeners.delete(removeId);
+          eventIds.delete(removeId);
+        }
+        return null;
+      }
+      return null;
     }
     if (cmd.indexOf("plugin:window|") === 0) {
       if (cmd.indexOf("outer_size") >= 0 || cmd.indexOf("inner_size") >= 0) return { width: 1200, height: 800 };
@@ -362,10 +432,11 @@
         return { accounts: mapAccounts(snapshot.status, snapshot.quotas.quotas) };
       }
       case "get_current_account": {
-        var state = (await loadSnapshot(false)).status;
+        var snap = await loadSnapshot(false);
+        var state = snap.status;
         if (!state.current) return null;
         var found = (state.accounts || []).filter(function (a) { return a.id === state.current; })[0];
-        return found ? mapAccount(found, (await loadSnapshot(false)).quotas.quotas) : null;
+        return found ? mapAccount(found, snap.quotas.quotas) : null;
       }
       case "get_account_dashboard_snapshot": {
         var snap = (await loadSnapshot(false));
