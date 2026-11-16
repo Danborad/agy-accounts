@@ -148,7 +148,7 @@ export function GroupQuota({ account, columns = 2 }: { account: Account; columns
 
     const rows = buildRows(quota);
     return (
-        <div className={cn("grid grid-cols-1 gap-2 w-full", columns === 2 && "md:grid-cols-2")}>
+        <div className={cn("grid grid-cols-1 gap-1.5 w-full", columns === 2 && "md:grid-cols-2")}>
             {rows.map((row) => {
                 const Icon = row.family === "claude" ? BrainCircuit : Sparkles;
                 const label = row.label
@@ -159,7 +159,10 @@ export function GroupQuota({ account, columns = 2 }: { account: Account; columns
                 return (
                     <div
                         key={row.key}
-                        className="rounded-lg border border-gray-200/70 bg-gray-50/80 px-2.5 py-1.5 dark:border-white/[0.08] dark:bg-white/[0.04]"
+                        className={cn(
+                            "rounded-lg border border-gray-200/70 bg-gray-50/80 px-2.5 py-1 dark:border-white/[0.08] dark:bg-white/[0.04]",
+                            row.label && columns === 2 && "md:col-span-2"
+                        )}
                         title={row.resetTime
                             ? `${label} · ${new Date(row.resetTime).toLocaleString()}`
                             : `${label} · Antigravity API 未返回该窗口的数据`}
@@ -173,13 +176,13 @@ export function GroupQuota({ account, columns = 2 }: { account: Account; columns
                                 {rounded === null ? "—" : `剩余 ${rounded}%`}
                             </span>
                         </div>
-                        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-white/10">
+                        <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-white/10">
                             <div
                                 className={`h-full rounded-full transition-all duration-500 ${barTone(row.remaining)}`}
                                 style={{ width: `${rounded ?? 0}%` }}
                             />
                         </div>
-                        <div className="mt-1 flex items-center justify-between gap-2 text-[10px] leading-none text-gray-400 dark:text-gray-500">
+                        <div className="mt-0.5 flex items-center justify-between gap-2 text-[10px] leading-none text-gray-400 dark:text-gray-500">
                             <span>{rounded === null ? "接口未提供" : ""}</span>
                             {reset ? (
                                 <span className="flex items-center gap-1 font-mono">
