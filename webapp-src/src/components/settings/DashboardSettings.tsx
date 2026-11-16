@@ -55,12 +55,19 @@ export default function DashboardSettings() {
 
     const save = async () => {
         if (saving || !config || !dirty) return;
+        if (selected.length === 0) {
+            const message = '至少保留一张首页卡片';
+            setError(message);
+            showToast(message, 'error');
+            return;
+        }
         setSaving(true);
         setError('');
         try {
             const next = await request<DashboardPreferences>('set_dashboard_cards', {
                 cards: selected,
                 order: ordered,
+                manual: true,
             });
             useConfigStore.setState(state => ({
                 config: state.config ? { ...state.config, dashboard: next } : null,

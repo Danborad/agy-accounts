@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.9.2"
+VERSION = "1.9.3"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -315,6 +315,8 @@ def save_preferences(cfg: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any
         raise ApiError(400, "dashboard.cards 与 dashboard.order 必须是数组")
     if len(cards) > 50 or len(order) > 50:
         raise ApiError(400, "卡片数量过多")
+    if data.get("manual") is not True:
+        raise ApiError(400, "仅支持在设置页手动保存卡片")
     try:
         client_rev = int(data.get("rev"))
     except (TypeError, ValueError):
@@ -325,10 +327,9 @@ def save_preferences(cfg: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any
         raise ApiError(409, "设置已在其它页面更新，请刷新后再保存")
     cards = [str(x)[:80] for x in cards]
     order = [str(x)[:80] for x in order]
-    # 空选择通常是前端竞态或旧标签页写回；个人自用场景直接恢复默认。
+    # 空选择可能是旧页面或异常请求写回，拒绝而不是静默改回默认。
     if not cards:
-        cards = list(DEFAULT_DASHBOARD_CARDS)
-        order = list(DEFAULT_DASHBOARD_ORDER)
+        raise ApiError(400, "至少保留一张首页卡片")
     payload = {"rev": current_rev + 1, "dashboard": {"cards": cards, "order": order}}
     write_json_atomic(preferences_path(cfg), payload, 0o600)
     log.info("卡片偏好已更新：rev=%d cards=%d order=%d [%s]",
@@ -1971,6 +1972,15 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/preferences":
                 body = self._read_body()
+                dashboard = body.get("dashboard") if isinstance(body, dict) else None
+                cards = dashboard.get("cards") if isinstance(dashboard, dict) else None
+                log.info("卡片保存来源：ua=%r page=%r ref=%r cards=%r rev=%r manual=%r",
+                         (self.headers.get("User-Agent") or "")[:120],
+                         (self.headers.get("X-Agy-Page") or "")[:40],
+                         (self.headers.get("Referer") or "")[:120],
+                         len(cards) if isinstance(cards, list) else cards,
+                         body.get("rev") if isinstance(body, dict) else None,
+                         body.get("manual") if isinstance(body, dict) else None)
                 self._json(200, {"ok": True, "preferences": save_preferences(self.app.cfg, body)})
                 return
             if path == "/api/accounts":

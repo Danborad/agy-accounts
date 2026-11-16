@@ -671,8 +671,10 @@
         try {
           response = await api("/api/preferences", {
             method: "POST",
+            headers: { "X-Agy-Page": window.location.pathname },
             body: JSON.stringify({
               rev: revision,
+              manual: args.manual === true,
               dashboard: { cards: cards, order: order }
             })
           });

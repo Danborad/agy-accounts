@@ -462,5 +462,41 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(agy_accounts.slugify("///"), "account")
 
 
+    def test_preferences_manual_save_requires_flag_and_revision(self):
+        self.login()
+        status, data, _ = self.request("GET", "/api/preferences")
+        self.assertEqual(status, 200)
+        rev = data["preferences"]["rev"]
+        cards = ["total_tokens", "input_tokens"]
+        order = ["total_tokens", "input_tokens"]
+        body = {"rev": rev, "dashboard": {"cards": cards, "order": order}}
+
+        status, data, _ = self.request("POST", "/api/preferences", body)
+        self.assertEqual(status, 400)
+        self.assertIn("手动保存", data["error"])
+
+        body["manual"] = True
+        status, data, _ = self.request("POST", "/api/preferences", body)
+        self.assertEqual(status, 200)
+        self.assertEqual(data["preferences"]["rev"], rev + 1)
+        self.assertEqual(data["preferences"]["dashboard"]["cards"], cards)
+
+        status, data, _ = self.request("POST", "/api/preferences", body)
+        self.assertEqual(status, 409)
+
+    def test_preferences_reject_empty_cards(self):
+        self.login()
+        status, data, _ = self.request("GET", "/api/preferences")
+        rev = data["preferences"]["rev"]
+        status, data, _ = self.request("POST", "/api/preferences", {
+            "rev": rev, "manual": True,
+            "dashboard": {"cards": [], "order": []},
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("至少保留", data["error"])
+        status, data, _ = self.request("GET", "/api/preferences")
+        self.assertEqual(data["preferences"]["rev"], rev)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
