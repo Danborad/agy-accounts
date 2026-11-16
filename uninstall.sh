@@ -20,6 +20,13 @@ done
 
 [[ "${EUID}" -eq 0 ]] || { echo "请用 root 运行" >&2; exit 1; }
 
+if systemctl list-unit-files | grep -q '^agy-i18n-proxy.service'; then
+  systemctl disable --now agy-i18n-proxy 2>/dev/null || true
+fi
+rm -f /etc/systemd/system/agy-i18n-proxy.service
+rm -rf /etc/agy-i18n
+systemctl daemon-reload
+
 if systemctl list-unit-files | grep -q "^${UNIT_NAME}.service"; then
   systemctl disable --now "${UNIT_NAME}" 2>/dev/null || true
 fi

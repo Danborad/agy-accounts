@@ -125,6 +125,10 @@ if [[ -d "${SRC}/webapp" ]]; then
   find "${PREFIX}/webapp" -type f -exec chmod 0644 {} +
 fi
 install -m 0644 "${SRC}/config.example.json" "${PREFIX}/config.example.json"
+if [[ -d "${SRC}/i18n" ]]; then
+  install -d -m 0755 "${PREFIX}/i18n"
+  install -m 0644 "${SRC}"/i18n/* "${PREFIX}/i18n/"
+fi
 if [[ -f "${SRC}/LICENSE" ]]; then install -m 0644 "${SRC}/LICENSE" "${PREFIX}/LICENSE"; fi
 if [[ -f "${SRC}/NOTICE" ]]; then install -m 0644 "${SRC}/NOTICE" "${PREFIX}/NOTICE"; fi
 ok "程序文件已复制"

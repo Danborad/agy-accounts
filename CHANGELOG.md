@@ -2,6 +2,17 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.6.0] - 2026-11-16
+
+### 新增
+
+- Antigravity 网页汉化：Nginx 注入翻译脚本，默认监听 8766
+- 词库外置为 `i18n/zh-CN.json`，翻译脚本保护代码块、终端、输入框、会话正文与标题
+- 支持 `?no-i18n=1` 临时关闭、`?i18n=1` 恢复
+- 新增 `install-i18n.sh` 与代理 systemd 单元
+- 面板「打开 Antigravity」指向汉化入口 8766
+- 版本 1.6.0
+
 ## [1.5.1] - 2026-11-16
 
 ### 调整

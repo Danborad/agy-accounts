@@ -1,0 +1,14 @@
+[Unit]
+Description=agy-accounts Chinese localization proxy for agy-server
+After=network-online.target agy-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/nginx -c /etc/agy-i18n/nginx.conf -g "daemon off;"
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target

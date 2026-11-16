@@ -13,6 +13,10 @@
 
 > 界面基于 [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch) 前端，已移除旧的轻量面板。
 
+<div align="center">
+  <img src="docs/assets/ui-i18n.png" width="620" alt="Antigravity 网页汉化">
+</div>
+
 ---
 
 ## 目录
@@ -87,7 +91,7 @@ Antigravity 在机器上的状态分三层：
 - 切换成功后可由配置决定跳转 Antigravity
 - 运行时仅依赖 Python 3.9+ 标准库；前端是已构建的静态文件
 - 登录限速、CSRF 校验、跨站 Origin 拒绝、会话 Cookie 加固
-- 隐私模式：点账号页的“小眼睛”，邮箱与备注显示为 `***@域名`
+- Antigravity 网页汉化：8766 注入代理，`?no-i18n=1` 可关闭
 
 > 仪表盘中的 Token 用量、模型分布与费用估算暂未接入服务器本地数据库，当前显示为 0；账号状态与额度是真实数据。
 
@@ -100,7 +104,10 @@ Antigravity 在机器上的状态分三层：
       │        │  systemctl stop/start agy-server
       │        └── 替换 ~/.gemini/jetski-standalone-oauth-token
       │
-      └── http://127.0.0.1:8765/        agy-server 网页
+      └── http://127.0.0.1:8766/        agy-server 中文入口（Nginx 注入）
+               │
+               ▼
+        http://127.0.0.1:8765/        agy-server 原站
                │
                ▼
         language_server --standalone
@@ -164,6 +171,14 @@ sudo ./install.sh \
 > 面板的 `probe_url` 建议保持 `http://127.0.0.1:8765/`，让就绪探测走本机；`app_url` 才填局域网地址，用于切换成功后跳转。
 
 安装完成后打开 `http://127.0.0.1:8790/`，输入安装时设置的密码。
+
+需要 Antigravity 网页汉化时，再运行：
+
+```bash
+sudo ./install-i18n.sh
+```
+
+之后使用 `http://服务器地址:8766/` 打开 Antigravity（`8765` 原站仍然可用）。
 
 - `/`：完整界面（账号管理、仪表盘、设置）
 - 账号页工具栏提供「隐私」小眼睛与「保存当前」
@@ -345,15 +360,20 @@ journalctl -u agy-accounts -f
 
 ## 汉化说明
 
-**v1.0 不包含界面汉化注入。** 原因是汉化需要额外一层反向代理与词库，属于独立风险面，按项目说明的实施顺序应单独验证。
+汉化由 `install-i18n.sh` 安装的一层 Nginx 代理完成，不修改 `agy-server` 二进制，因此上游升级不会被覆盖。
 
-已确认的限制：
+- 中文入口：`http://服务器地址:8766/`
+- 原站入口：`http://服务器地址:8765/`
+- 临时关闭汉化：网址后加 `?no-i18n=1`
+- 恢复汉化：网址后加 `?i18n=1`
+- 词库：`i18n/zh-CN.json`（外置，升级只需替换词库）
+- 脚本：`i18n/agy-i18n.js`
 
-- 现有两个社区汉化项目（[antigravity-chinese](https://github.com/yiheng8023/antigravity-chinese)、[Antigravity-Chinese-Localization](https://github.com/liominsb/Antigravity-Chinese-Localization)）面向 Electron 桌面版，直接装到服务器无效；
-- 服务器上的 `agy-server` 不运行 Electron，只能复用其翻译引擎与词库；
-- 汉化词库与 Antigravity 版本强相关，升级后必须回归。
+保护规则：只翻译精确匹配的界面文案；跳过 `pre` / `code` / 终端 / `textarea` / 输入框 / 可编辑区域 / Markdown 正文 / 会话正文 / 会话标题与项目名。模型名、文件路径、代码和用户输入不会被改写。
 
-后续计划：在 `agy-server` 前加轻量反向代理，向页面头部注入翻译脚本；词库外置；严格保护代码块、终端输出、会话正文、Markdown、文件路径、模型名与输入框；提供 `?no-i18n=1` 临时关闭开关。验收标准见项目说明第十二章。
+当前词库适配 Antigravity 2.32.1，覆盖侧栏、首页、模型菜单、Usage 面板、设置页主要文案。上游升级后如果新增文案，会保持英文而不是乱译；按项目说明第十二章做一次界面回归即可。
+
+安装脚本会安装 `nginx-light`（如果尚未安装），并禁用系统默认 nginx 服务，改用独立单元 `agy-i18n-proxy.service` 监听 8766，不影响 NAS 自带的 443 Nginx。
 
 ## 验收与测试
 
