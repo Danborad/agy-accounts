@@ -659,6 +659,16 @@
         }
         return dashboardConfig.dashboard;
       }
+      case "change_password": {
+        await api("/api/password", {
+          method: "POST",
+          body: JSON.stringify({
+            currentPassword: args.currentPassword,
+            newPassword: args.newPassword
+          })
+        });
+        return null;
+      }
       case "set_desktop_preferences":
       case "set_menu_bar_preferences":
       case "open_data_folder":

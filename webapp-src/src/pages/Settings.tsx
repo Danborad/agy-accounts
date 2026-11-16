@@ -7,6 +7,7 @@ import { request as invoke } from '../utils/request';
 import { showToast } from '../components/common/ToastContainer';
 import { open } from '@tauri-apps/plugin-dialog';
 import DashboardSettings from '../components/settings/DashboardSettings';
+import PasswordSettings from '../components/settings/PasswordSettings';
 import ModelDisplaySettings from '../components/settings/ModelDisplaySettings';
 import NetworkSettings from '../components/settings/NetworkSettings';
 import SettingsNavigation, { SETTINGS_SECTIONS, SettingsSection } from '../components/settings/SettingsNavigation';
@@ -35,11 +36,14 @@ function Settings() {
     }, [section]);
 
     useEffect(() => {
-        loadConfig();
+        if (!config) void loadConfig();
+    }, [config, loadConfig]);
+
+    useEffect(() => {
         invoke<string>('get_data_dir_path')
             .then(setDataDirPath)
             .catch(() => {});
-    }, [loadConfig]);
+    }, []);
 
     const updateConfig = async (patch: Partial<AppConfig>) => {
         if (!config) return;
@@ -173,6 +177,8 @@ function Settings() {
                         </div>
                     </div>
                 </section>
+
+                <PasswordSettings />
 
                 {/* 2. 桌面与系统窗口 */}
                 <DashboardSettings />

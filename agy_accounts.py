@@ -40,7 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.8.3"
+VERSION = "1.9.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -377,6 +377,24 @@ def check_password(cfg: Dict[str, Any], password: str) -> bool:
     if cfg.get("password_hash") and verify_password_hash(password, str(cfg["password_hash"])):
         ok = True
     return ok
+
+
+def change_password(cfg: Dict[str, Any], current: str, new_password: str) -> None:
+    if not check_password(cfg, current):
+        raise ApiError(403, "当前密码不正确")
+    if not isinstance(new_password, str) or len(new_password) < 8:
+        raise ApiError(400, "新密码至少 8 个字符")
+    if len(new_password) > 256:
+        raise ApiError(400, "新密码过长")
+    digest = hash_password(new_password)
+    cfg["password_hash"] = digest
+    cfg["password"] = ""
+    path = cfg.get("config_path") or config_path()
+    stored = read_json(path)
+    stored["password_hash"] = digest
+    stored["password"] = ""
+    write_json_atomic(path, stored, 0o600)
+    log.info("面板密码已更新")
 
 
 def load_secret(cfg: Dict[str, Any]) -> bytes:
@@ -1930,6 +1948,12 @@ class PanelHandler(BaseHTTPRequestHandler):
                 if self.app.cfg.get("cookie_secure"):
                     expired += "; Secure"
                 self._json(200, {"ok": True}, {"Set-Cookie": expired})
+                return
+            if path == "/api/password":
+                body = self._read_body()
+                change_password(self.app.cfg, str(body.get("currentPassword") or ""),
+                                str(body.get("newPassword") or ""))
+                self._json(200, {"ok": True})
                 return
             if path == "/api/preferences":
                 body = self._read_body()
