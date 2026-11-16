@@ -38,7 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(BASE_DIR, "web")
@@ -527,13 +527,16 @@ def token_label(raw: Optional[bytes]) -> str:
 # ---------------------------------------------------------------------------
 
 CLOUDCODE_BASES = [
-    "https://cloudcode-pa.googleapis.com",
     "https://daily-cloudcode-pa.googleapis.com",
+    "https://cloudcode-pa.googleapis.com",
     "https://daily-cloudcode-pa.sandbox.googleapis.com",
 ]
 CLOUDCODE_BASE = CLOUDCODE_BASES[0]
 OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
-QUOTA_USER_AGENT = "antigravity/1.2.9"
+# Antigravity 语言服务器使用 aidev_client UA；不带它时 CloudCode 只返回
+# Claude 组，带它才会同时返回 Gemini Models 的 5h / weekly 两个桶。
+QUOTA_USER_AGENT = ("antigravity/hub/2.32.1 (aidev_client; os_type=linux; "
+                    "arch=amd64; cl=1021296516; datacollection_opt_in=false)")
 
 # Antigravity 安装型 OAuth 客户端的公开凭据（Google 明确说明安装型应用密钥
 # 不当作机密对待，客户端本身可从官方二进制中提取）。拆成两段以避免仓库

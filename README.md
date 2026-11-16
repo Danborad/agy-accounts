@@ -315,7 +315,7 @@ python3 agy_accounts.py --version
 - Claude / GPT 与 Gemini 的 5 小时、每周剩余比例
 - 重置时间，以及“当前不适用”的桶
 
-额度查询按原版顺序使用 `cloudcode-pa.googleapis.com` 等生产端点：`fetchAvailableModels` 取逐模型额度，`retrieveUserQuotaSummary` 取 5 小时 / 每周分组，`loadCodeAssist` 取套餐。面板把数据归并为 Claude / Gemini × 5h / 周额度 四个汇总条；接口没有返回的分组会显示「暂无数据」，不会伪造百分比。额度请求使用快照自己的 `access_token`；快照过期时会用 `refresh_token` 刷新并写回快照。若该账号正是当前登录，刷新后的令牌也会同步到线上令牌文件（与切换事务互斥，避免交叉写入）。结果缓存 `quota_ttl` 秒（默认 5 分钟），页面上的“刷新”会强制重查。
+额度查询使用与 Antigravity 语言服务器一致的 `aidev_client` User-Agent，并优先使用 `daily-cloudcode-pa.googleapis.com`：`fetchAvailableModels` 取逐模型额度，`retrieveUserQuotaSummary` 取 5 小时 / 每周分组，`loadCodeAssist` 取套餐。面板把数据归并为 Claude / Gemini × 5h / 周额度 四个汇总条；接口没有返回的分组会显示「暂无数据」，不会伪造百分比。额度请求使用快照自己的 `access_token`；快照过期时会用 `refresh_token` 刷新并写回快照。若该账号正是当前登录，刷新后的令牌也会同步到线上令牌文件（与切换事务互斥，避免交叉写入）。结果缓存 `quota_ttl` 秒（默认 5 分钟），页面上的“刷新”会强制重查。
 
 说明：
 

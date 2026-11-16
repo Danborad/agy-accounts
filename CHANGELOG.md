@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.4.2] - 2026-11-16
+
+### 修复
+
+- 额度接口改用 Antigravity 语言服务器的 `aidev_client` User-Agent
+- `retrieveUserQuotaSummary` 现可同时返回 Gemini 与 Claude 的 5h / 周额度
+- 额度端点改为优先 daily-cloudcode，与 Antigravity 自身 Usage 面板一致
+- 版本 1.4.2
+
 ## [1.4.1] - 2026-11-16
 
 ### 调整
