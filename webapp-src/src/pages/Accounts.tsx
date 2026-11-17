@@ -54,7 +54,6 @@ function Accounts() {
     addAccount,
     deleteAccounts,
     switchAccount,
-    loading,
     refreshQuota,
     reorderAccounts,
     updateAccountLabel,
@@ -284,7 +283,11 @@ function Accounts() {
   );
 
   const handleSwitch = async (accountId: string) => {
-    if (loading || switchingAccountId) return;
+    // 后台额度刷新也会把全局 loading 置为 true；手动切换不应被它阻塞。
+    if (switchingAccountId) {
+      showToast(t('accounts.switch_in_progress', '正在切换账号，请稍候…'), 'info');
+      return;
+    }
 
     setSwitchingAccountId(accountId);
     try {
