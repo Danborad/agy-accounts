@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.9.9"
+VERSION = "1.9.10"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -1582,7 +1582,7 @@ def language_server_auth(home: Optional[str] = None) -> Optional[Dict[str, Any]]
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
     try:
-        with urllib.request.urlopen(request, timeout=8, context=context) as response:
+        with urllib.request.urlopen(request, timeout=20, context=context) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")
     except (OSError, ValueError, urllib.error.URLError):
         return None
@@ -1606,6 +1606,8 @@ class FailoverManager:
         self._lock = threading.Lock()
         self._state_lock = threading.Lock()
         self.last_attempt = 0.0
+        self.unknown_streak = 0
+        self.last_good = ""
         self._state: Dict[str, Any] = {
             "state": "idle", "message": "尚未检查", "at": 0,
             "from": "", "to": "",
@@ -1641,22 +1643,37 @@ class FailoverManager:
             self._set("checking", "正在检查当前账号")
             auth = language_server_auth()
             if auth is None:
-                self._set("unknown", "暂时无法读取 Antigravity 登录状态")
-                return self.state()
-            if auth["signed_in"]:
-                self._set("ok", "当前账号可用")
-                return self.state()
-            if not auth["ineligible"]:
-                message = auth["message"] or "当前账号需要重新登录"
-                self._set("needs_signin", message)
-                return self.state()
+                self.unknown_streak += 1
+                if self.unknown_streak < 3:
+                    self._set("unknown", "暂时无法读取 Antigravity 登录状态")
+                    return self.state()
+                log.warning("连续 %d 次无法读取登录状态，按账号失效处理",
+                            self.unknown_streak)
+                auth = {"signed_in": False, "ineligible": True,
+                        "message": "语言服务器长时间无响应"}
+            else:
+                self.unknown_streak = 0
+                if auth["signed_in"]:
+                    accounts = list_accounts(self.cfg)
+                    current = next((a for a in accounts if a.get("is_current")), None)
+                    if current:
+                        self.last_good = str(current["id"])
+                    self._set("ok", "当前账号可用")
+                    return self.state()
+                if not auth["ineligible"]:
+                    message = auth["message"] or "当前账号需要重新登录"
+                    self._set("needs_signin", message)
+                    return self.state()
 
             accounts = list_accounts(self.cfg)
             current = next((a for a in accounts if a.get("is_current")), None)
             candidates = [a for a in accounts if not a.get("is_current")]
-            candidates.sort(key=lambda a: (int(a.get("last_used_at") or 0),
-                                           int(a.get("created_at") or 0)),
-                            reverse=True)
+            if self.last_good:
+                candidates.sort(key=lambda a: 0 if str(a.get("id")) == self.last_good else 1)
+            else:
+                candidates.sort(key=lambda a: (int(a.get("last_used_at") or 0),
+                                               int(a.get("created_at") or 0)),
+                                reverse=True)
             if not candidates:
                 self._set("no_candidates", "当前账号不可用，但没有其它可切换账号")
                 return self.state()
@@ -1686,6 +1703,8 @@ class FailoverManager:
 
                 checked = self._wait_auth()
                 if checked and checked.get("signed_in"):
+                    self.last_good = str(candidate["id"])
+                    self.unknown_streak = 0
                     log.warning("自动切换完成：%s -> %s", from_name, name)
                     self._set("switched", "已自动切换到「%s」" % name,
                               **{"from": from_name, "to": name})
@@ -1700,6 +1719,7 @@ class FailoverManager:
                 except Exception as exc:  # noqa: BLE001
                     log.error("自动切换失败后未能切回「%s」：%s", from_name,
                               exc.__class__.__name__)
+            self.unknown_streak = 0
             self._set("failed", "自动切换失败：没有找到可用账号"
                       + ("（%s）" % last_error if last_error else ""),
                       **{"from": from_name})

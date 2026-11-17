@@ -536,6 +536,29 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(state["state"], "switched")
         self.assertEqual(state["to"], "备用账号")
 
+
+    def test_failover_recovers_after_unknown_auth_streak(self):
+        manager = agy_accounts.FailoverManager(self.loaded, self.app.switcher)
+        accounts = [
+            {"id": "current", "name": "主账号", "is_current": True,
+             "last_used_at": 300, "created_at": 1},
+            {"id": "backup", "name": "备用账号", "is_current": False,
+             "last_used_at": 200, "created_at": 2},
+        ]
+        answers = [
+            None, None, None,
+            {"signed_in": True, "ineligible": False, "message": "", "checked_at": 0},
+        ]
+        with mock.patch.object(agy_accounts, "language_server_auth", side_effect=answers), \
+                mock.patch.object(agy_accounts, "list_accounts", return_value=accounts), \
+                mock.patch.object(self.app.switcher, "switch", return_value={}) as switch:
+            manager.check(force=True)
+            manager.check(force=True)
+            state = manager.check(force=True)
+        switch.assert_called_once_with("backup")
+        self.assertEqual(state["state"], "switched")
+        self.assertEqual(manager.unknown_streak, 0)
+
     def test_failover_disabled_does_not_check(self):
         self.loaded["auto_failover"] = False
         manager = agy_accounts.FailoverManager(self.loaded, self.app.switcher)
