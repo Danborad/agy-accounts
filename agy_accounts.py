@@ -26,6 +26,7 @@ import shlex
 import shutil
 import signal
 import sqlite3
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -40,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.9.3"
+VERSION = "1.9.4"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -87,6 +88,7 @@ DEFAULTS: Dict[str, Any] = {
     "login_max_failures": 5,
     "login_window": 300,
     "log_level": "INFO",
+    "auto_failover": True,
 }
 
 ENV_OVERRIDES = {
@@ -272,7 +274,18 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
     cfg["password_hash"] = str(cfg.get("password_hash") or "")
     cfg["language_server_path"] = expand_path(cfg.get("language_server_path") or
                                                "/opt/agy-server/language_server")
+    cfg["auto_failover"] = bool(cfg.get("auto_failover", True))
     return cfg
+
+
+def update_config(cfg: Dict[str, Any], **updates: Any) -> None:
+    """更新少量配置项并写回文件，用于面板设置页。"""
+    path = cfg.get("config_path") or config_path()
+    stored = read_json(path)
+    for key, value in updates.items():
+        stored[key] = value
+        cfg[key] = value
+    write_json_atomic(path, stored, 0o600)
 
 
 def preferences_path(cfg: Dict[str, Any]) -> str:
@@ -1514,6 +1527,196 @@ class Switcher:
         return ok
 
 
+# ---------------------------------------------------------------------------
+# 账号失效自动切换
+# ---------------------------------------------------------------------------
+
+FAILOVER_INTERVAL = 90
+FAILOVER_COOLDOWN = 1800
+FAILOVER_AUTH_TIMEOUT = 30
+
+
+def language_server_auth(home: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """询问语言服务器当前 Google 账号是否可用。
+
+    只信任服务器明确给出的回答；连接失败或服务未就绪时返回 None。
+    """
+    daemon_dir = os.path.join(home or os.path.expanduser("~"),
+                              ".gemini", "antigravity", "daemon")
+    candidates: List[Tuple[float, int, str]] = []
+    try:
+        names = os.listdir(daemon_dir)
+    except OSError:
+        return None
+    for name in names:
+        if not (name.startswith("hub_") and name.endswith(".json")):
+            continue
+        path = os.path.join(daemon_dir, name)
+        try:
+            stat = os.stat(path)
+            data = read_json(path)
+        except OSError:
+            continue
+        pid = data.get("pid")
+        port = data.get("httpsPort")
+        token = data.get("csrfToken")
+        if not isinstance(pid, int) or not isinstance(port, int) or not isinstance(token, str) or not token:
+            continue
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            continue
+        candidates.append((stat.st_mtime, port, token))
+    if not candidates:
+        return None
+    _, port, csrf = max(candidates)
+
+    url = ("https://127.0.0.1:%d/exa.language_server_pb.LanguageServerService/GetAuthStatus"
+           % port)
+    request = urllib.request.Request(
+        url, data=b"{}", method="POST",
+        headers={"Content-Type": "application/json",
+                 "Connect-Protocol-Version": "1",
+                 "x-codeium-csrf-token": csrf})
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(request, timeout=8, context=context) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+    except (OSError, ValueError, urllib.error.URLError):
+        return None
+    result = payload.get("authResult")
+    if not isinstance(result, dict):
+        return None
+    return {
+        "signed_in": bool(result.get("hasValidAuth")),
+        "ineligible": "ineligible" in result,
+        "message": str(result.get("uiMessage") or "").strip(),
+        "checked_at": now(),
+    }
+
+
+class FailoverManager:
+    """当前账号被 Google 判定不可用时，自动尝试其它已保存账号。"""
+
+    def __init__(self, cfg: Dict[str, Any], switcher: "Switcher"):
+        self.cfg = cfg
+        self.switcher = switcher
+        self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self.last_attempt = 0.0
+        self._state: Dict[str, Any] = {
+            "state": "idle", "message": "尚未检查", "at": 0,
+            "from": "", "to": "",
+        }
+
+    def state(self) -> Dict[str, Any]:
+        with self._state_lock:
+            return dict(self._state)
+
+    def _set(self, state: str, message: str, **extra: Any) -> None:
+        with self._state_lock:
+            self._state = {"state": state, "message": message, "at": now()}
+            self._state.update(extra)
+
+    def _wait_auth(self, timeout: int = FAILOVER_AUTH_TIMEOUT) -> Optional[Dict[str, Any]]:
+        deadline = time.time() + max(5, timeout)
+        while time.time() < deadline:
+            auth = language_server_auth()
+            if auth is not None:
+                return auth
+            time.sleep(3)
+        return None
+
+    def check(self, force: bool = False) -> Dict[str, Any]:
+        if not self.cfg.get("auto_failover", True):
+            self._set("disabled", "自动切换已关闭")
+            return self.state()
+        if not self._lock.acquire(blocking=False):
+            return self.state()
+        try:
+            if not force and now() - self.last_attempt < FAILOVER_COOLDOWN:
+                return self.state()
+            self._set("checking", "正在检查当前账号")
+            auth = language_server_auth()
+            if auth is None:
+                self._set("unknown", "暂时无法读取 Antigravity 登录状态")
+                return self.state()
+            if auth["signed_in"]:
+                self._set("ok", "当前账号可用")
+                return self.state()
+            if not auth["ineligible"]:
+                message = auth["message"] or "当前账号需要重新登录"
+                self._set("needs_signin", message)
+                return self.state()
+
+            accounts = list_accounts(self.cfg)
+            current = next((a for a in accounts if a.get("is_current")), None)
+            candidates = [a for a in accounts if not a.get("is_current")]
+            candidates.sort(key=lambda a: (int(a.get("last_used_at") or 0),
+                                           int(a.get("created_at") or 0)),
+                            reverse=True)
+            if not candidates:
+                self._set("no_candidates", "当前账号不可用，但没有其它可切换账号")
+                return self.state()
+
+            self.last_attempt = now()
+            from_name = str((current or {}).get("name") or "当前账号")
+            log.warning("当前账号不可用（%s），开始自动切换，候选 %d 个",
+                        auth["message"] or "需要验证", len(candidates))
+            self._set("switching", "当前账号不可用，正在尝试自动切换",
+                      **{"from": from_name})
+            last_error = ""
+            for candidate in candidates:
+                name = str(candidate.get("name") or candidate.get("id"))
+                try:
+                    self.switcher.switch(str(candidate["id"]))
+                except ApiError as exc:
+                    last_error = exc.message
+                    if exc.status == 409:
+                        self._set("busy", "有其它切换正在进行", **{"from": from_name})
+                        return self.state()
+                    log.warning("自动切换到「%s」失败：%s", name, exc.message)
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc.__class__.__name__
+                    log.warning("自动切换到「%s」异常：%s", name, last_error)
+                    continue
+
+                checked = self._wait_auth()
+                if checked and checked.get("signed_in"):
+                    log.warning("自动切换完成：%s -> %s", from_name, name)
+                    self._set("switched", "已自动切换到「%s」" % name,
+                              **{"from": from_name, "to": name})
+                    return self.state()
+                last_error = (checked or {}).get("message") or "账号不可用"
+                log.warning("自动切换后「%s」仍不可用：%s", name, last_error)
+
+            if current:
+                try:
+                    self.switcher.switch(str(current["id"]))
+                    log.warning("自动切换失败，已切回「%s」", from_name)
+                except Exception as exc:  # noqa: BLE001
+                    log.error("自动切换失败后未能切回「%s」：%s", from_name,
+                              exc.__class__.__name__)
+            self._set("failed", "自动切换失败：没有找到可用账号"
+                      + ("（%s）" % last_error if last_error else ""),
+                      **{"from": from_name})
+            return self.state()
+        finally:
+            self._lock.release()
+
+
+def failover_loop(manager: FailoverManager) -> None:
+    time.sleep(20)
+    while True:
+        try:
+            manager.check()
+        except Exception:  # noqa: BLE001
+            log.exception("自动切换检查失败")
+        time.sleep(FAILOVER_INTERVAL)
+
 
 # ---------------------------------------------------------------------------
 # 本地 Token 用量（读取 Antigravity 会话数据库）
@@ -1923,6 +2126,14 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._require_auth()
                 self._json(200, {"ok": True, "preferences": load_preferences(self.app.cfg)})
                 return
+            if path == "/api/failover":
+                self._require_auth()
+                self._json(200, {
+                    "ok": True,
+                    "enabled": bool(self.app.cfg.get("auto_failover", True)),
+                    "status": self.app.failover.state(),
+                })
+                return
             if path == "/api/usage":
                 self._require_auth()
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -1969,6 +2180,19 @@ class PanelHandler(BaseHTTPRequestHandler):
                 change_password(self.app.cfg, str(body.get("currentPassword") or ""),
                                 str(body.get("newPassword") or ""))
                 self._json(200, {"ok": True})
+                return
+            if path == "/api/failover":
+                body = self._read_body()
+                enabled = body.get("enabled")
+                if not isinstance(enabled, bool):
+                    raise ApiError(400, "enabled 必须是布尔值")
+                update_config(self.app.cfg, auto_failover=enabled)
+                log.info("账号自动切换已%s", "启用" if enabled else "关闭")
+                self._json(200, {
+                    "ok": True,
+                    "enabled": enabled,
+                    "status": self.app.failover.state(),
+                })
                 return
             if path == "/api/preferences":
                 body = self._read_body()
@@ -2095,6 +2319,7 @@ class App:
         self.switcher = Switcher(cfg)
         self.quota = QuotaManager(cfg, self.switcher)
         self.usage = UsageStats(cfg)
+        self.failover = FailoverManager(cfg, self.switcher)
 
     def status_payload(self) -> Dict[str, Any]:
         accounts = list_accounts(self.cfg)
@@ -2112,6 +2337,8 @@ class App:
                 "active": active,
             },
             "switching": self.switcher.state(),
+            "auto_failover": {"enabled": bool(self.cfg.get("auto_failover", True)),
+                              "status": self.failover.state()},
             "app_url": self.cfg.get("app_url") or "",
             "token_path": self.cfg["token_path"],
             "accounts_dir": self.cfg["accounts_dir"],
@@ -2164,6 +2391,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
     log.info("令牌路径：%s", cfg["token_path"])
     log.info("账号目录：%s", cfg["accounts_dir"])
     log.info("服务名：%s", cfg.get("service_name") or "agy-server")
+    threading.Thread(target=failover_loop, args=(app.failover,),
+                     name="agy-failover", daemon=True).start()
+    log.info("账号自动切换：%s", "已启用" if cfg.get("auto_failover", True) else "已关闭")
 
     def shutdown(signum: int, _frame: Any) -> None:
         log.info("收到信号 %s，正在退出", signum)

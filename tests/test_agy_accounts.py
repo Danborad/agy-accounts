@@ -18,6 +18,7 @@ import threading
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -496,6 +497,52 @@ class PanelTest(unittest.TestCase):
         self.assertIn("至少保留", data["error"])
         status, data, _ = self.request("GET", "/api/preferences")
         self.assertEqual(data["preferences"]["rev"], rev)
+
+
+    def test_failover_toggle_and_switch(self):
+        self.login()
+        status, data, _ = self.request("GET", "/api/failover")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["enabled"])
+
+        status, data, _ = self.request("POST", "/api/failover", {"enabled": False})
+        self.assertEqual(status, 200)
+        self.assertFalse(data["enabled"])
+        with open(self.config_path, encoding="utf-8") as handle:
+            stored = json.load(handle)
+        self.assertFalse(stored["auto_failover"])
+
+        status, data, _ = self.request("POST", "/api/failover", {"enabled": True})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["enabled"])
+
+    def test_failover_switches_when_account_ineligible(self):
+        manager = agy_accounts.FailoverManager(self.loaded, self.app.switcher)
+        accounts = [
+            {"id": "current", "name": "主账号", "is_current": True,
+             "last_used_at": 300, "created_at": 1},
+            {"id": "backup", "name": "备用账号", "is_current": False,
+             "last_used_at": 200, "created_at": 2},
+        ]
+        answers = [
+            {"signed_in": False, "ineligible": True, "message": "需要验证", "checked_at": 0},
+            {"signed_in": True, "ineligible": False, "message": "", "checked_at": 0},
+        ]
+        with mock.patch.object(agy_accounts, "language_server_auth", side_effect=answers), \
+                mock.patch.object(agy_accounts, "list_accounts", return_value=accounts), \
+                mock.patch.object(self.app.switcher, "switch", return_value={}) as switch:
+            state = manager.check(force=True)
+        switch.assert_called_once_with("backup")
+        self.assertEqual(state["state"], "switched")
+        self.assertEqual(state["to"], "备用账号")
+
+    def test_failover_disabled_does_not_check(self):
+        self.loaded["auto_failover"] = False
+        manager = agy_accounts.FailoverManager(self.loaded, self.app.switcher)
+        with mock.patch.object(agy_accounts, "language_server_auth") as auth:
+            state = manager.check(force=True)
+        auth.assert_not_called()
+        self.assertEqual(state["state"], "disabled")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import { request as invoke } from '../utils/request';
 import { showToast } from '../components/common/ToastContainer';
 import { open } from '@tauri-apps/plugin-dialog';
 import DashboardSettings from '../components/settings/DashboardSettings';
+import FailoverSettings from '../components/settings/FailoverSettings';
 import PasswordSettings from '../components/settings/PasswordSettings';
 import ModelDisplaySettings from '../components/settings/ModelDisplaySettings';
 import NetworkSettings from '../components/settings/NetworkSettings';
@@ -179,6 +180,8 @@ function Settings() {
                 </section>
 
                 <PasswordSettings />
+
+                <FailoverSettings />
 
                 {/* 2. 桌面与系统窗口 */}
                 <DashboardSettings />

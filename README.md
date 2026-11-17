@@ -85,6 +85,7 @@ Antigravity 在机器上的状态分三层：
 - 本地 Token 用量监控：今日 / 昨日 / 3 / 7 / 30 天、24 小时趋势、按模型统计
 - 保存当前登录为命名快照（右下角工具栏，自动识别邮箱）
 - 一键切换：停止 → 替换 → 启动 → 探测，全程串行
+- 当前账号被 Google 判定不可用 / 需要验证时，自动尝试其它已保存账号（默认开启，可在设置页关闭）
 - 失败自动回滚：任何一步出错都恢复原令牌并尽量拉起服务
 - 重命名 / 编辑备注（只改显示名，目录 ID 不变）
 - 删除快照（不触碰线上令牌与业务数据）
@@ -228,6 +229,7 @@ python3 agy_accounts.py serve
 | `quota_ttl` | `300` | 额度缓存秒数 |
 | `quota_timeout` | `12` | 额度接口单次请求超时秒数 |
 | `stop_timeout` | `20` | 等待进程退出的最长秒数 |
+| `auto_failover` | `true` | 当前账号被判定不可用时自动切换，设置页可开关 |
 | `login_max_failures` | `5` | 登录失败次数上限（按 IP） |
 | `login_window` | `300` | 失败计数窗口（秒） |
 | `log_level` | `INFO` | 日志级别 |
@@ -301,6 +303,7 @@ python3 agy_accounts.py --version
 | `GET` | `/api/quotas` | 各账号套餐与额度；`?refresh=1` 强制刷新 |
 | `GET` | `/api/usage` | 本地 Token 用量汇总；`?refresh=1` 绕过 60 秒缓存 |
 | `GET/POST` | `/api/preferences` | 服务端保存首页卡片选择 |
+| `GET/POST` | `/api/failover` | 查询 / 开关「账号失效自动切换」 |
 | `POST` | `/api/accounts` | `{"name":"..."}` 保存当前登录 |
 | `POST` | `/api/accounts/{id}/switch` | 切换账号 |
 | `POST` | `/api/accounts/{id}/rename` | `{"name":"..."}` 改显示名 |

@@ -708,6 +708,14 @@
         });
         return null;
       }
+      case "get_failover":
+        return await api("/api/failover");
+      case "set_failover": {
+        return await api("/api/failover", {
+          method: "POST",
+          body: JSON.stringify({ enabled: args.enabled === true })
+        });
+      }
       case "set_desktop_preferences":
       case "set_menu_bar_preferences":
       case "open_data_folder":
