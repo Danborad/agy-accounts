@@ -781,24 +781,54 @@
     gate = document.createElement("div");
     gate.id = "agy-accounts-gate";
     gate.innerHTML = [
-      '<form class="agy-gate-card">',
-      '  <div class="agy-gate-mark">AG</div>',
-      '  <h1>Antigravity 账号面板</h1>',
-      '  <p>请输入面板密码。登录后即可管理账号、切换身份与查看额度。</p>',
-      '  <label>面板密码</label>',
-      '  <input name="password" type="password" autocomplete="current-password" required autofocus>',
-      '  <button type="submit">解锁</button>',
-      '  <div class="agy-gate-note">密码错误不会泄露任何账号信息。</div>',
+      '<form class="agy-gate-card" novalidate>',
+      '  <div class="agy-gate-brand">',
+      '    <span class="agy-gate-logo">A</span>',
+      '    <span><strong>Antigravity Switch</strong><small>多账号控制面板</small></span>',
+      '  </div>',
+      '  <h1>登录账号面板</h1>',
+      '  <p class="agy-gate-sub">输入面板密码，继续管理账号、切换身份与查看额度。</p>',
+      '  <div class="agy-gate-chips"><span>多账号</span><span>额度监控</span><span>Token 用量</span></div>',
+      '  <label for="agy-gate-password">面板密码</label>',
+      '  <div class="agy-gate-field">',
+      '    <input id="agy-gate-password" name="password" type="password" autocomplete="current-password" placeholder="请输入面板密码" required autofocus>',
+      '    <button type="button" class="agy-gate-eye" aria-label="显示密码">显示</button>',
+      '  </div>',
+      '  <button type="submit" class="agy-gate-submit"><span>解锁面板</span><span class="agy-gate-arrow">→</span></button>',
+      '  <div class="agy-gate-note" role="status">密码仅用于本机验证，不会上传。</div>',
+      '  <div class="agy-gate-foot"><span>agy-accounts</span><span>本地部署</span></div>',
       '</form>'
     ].join("");
     document.body.appendChild(gate);
     var form = gate.querySelector("form");
     var input = gate.querySelector("input");
     var note = gate.querySelector(".agy-gate-note");
-    if (message) note.textContent = message;
+    var submit = gate.querySelector(".agy-gate-submit");
+    var eye = gate.querySelector(".agy-gate-eye");
+    var setNote = function (text, isError) {
+      note.textContent = text;
+      note.classList.toggle("agy-gate-error", Boolean(isError));
+    };
+    if (message) setNote(message, true);
+    eye.addEventListener("click", function () {
+      var shown = input.type === "text";
+      input.type = shown ? "password" : "text";
+      eye.textContent = shown ? "显示" : "隐藏";
+      eye.setAttribute("aria-label", shown ? "显示密码" : "隐藏密码");
+      input.focus();
+    });
+    input.focus();
     form.addEventListener("submit", function (event) {
       event.preventDefault();
-      note.textContent = "验证中…";
+      if (submit.disabled) return;
+      if (!input.value) {
+        setNote("请输入面板密码。", true);
+        input.focus();
+        return;
+      }
+      submit.disabled = true;
+      form.classList.add("agy-gate-busy");
+      setNote("正在验证…", false);
       fetch("/api/login", {
         method: "POST",
         credentials: "same-origin",
@@ -810,7 +840,9 @@
           window.location.reload();
         });
       }).catch(function (error) {
-        note.textContent = error.message || "登录失败";
+        setNote(error.message || "登录失败", true);
+        submit.disabled = false;
+        form.classList.remove("agy-gate-busy");
         input.select();
       });
     });
@@ -951,21 +983,46 @@
     "html.agy-gate #root{display:none!important}",
     "html.agy-gate body{overflow:hidden!important}",
     "#agy-accounts-gate{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;padding:24px;",
-    "background:radial-gradient(900px 500px at 80% -10%,rgba(85,214,190,.12),transparent 60%),#0b1017;",
-    "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;color:#e8eef7}",
-    "#agy-accounts-gate .agy-gate-card{width:100%;max-width:380px;padding:30px 26px;border-radius:20px;",
-    "background:#141e2b;border:1px solid #243247;box-shadow:0 24px 60px rgba(0,0,0,.45)}",
-    "#agy-accounts-gate .agy-gate-mark{width:44px;height:44px;border-radius:13px;display:grid;place-items:center;",
-    "background:linear-gradient(140deg,#55d6be,#4e7cff);color:#062019;font-weight:800;margin-bottom:20px}",
-    "#agy-accounts-gate h1{font-size:21px;margin:0 0 6px}",
-    "#agy-accounts-gate p{color:#8fa2bb;font-size:13px;line-height:1.6;margin:0 0 20px}",
-    "#agy-accounts-gate label{display:block;color:#8fa2bb;font-size:12px;margin-bottom:6px}",
-    "#agy-accounts-gate input{width:100%;box-sizing:border-box;padding:12px 13px;border-radius:10px;",
-    "border:1px solid #243247;background:#0c141e;color:#e8eef7;font-size:15px;outline:none}",
-    "#agy-accounts-gate input:focus{border-color:#2fb8a0;box-shadow:0 0 0 3px rgba(85,214,190,.14)}",
-    "#agy-accounts-gate button{width:100%;margin-top:14px;padding:12px;border:0;border-radius:10px;",
-    "background:linear-gradient(180deg,#55d6be,#2fb8a0);color:#04231d;font-weight:700;font-size:14px;cursor:pointer}",
-    "#agy-accounts-gate .agy-gate-note{margin-top:12px;color:#64758c;font-size:11.5px;line-height:1.5}",
+    "background:radial-gradient(1000px 600px at 15% -10%,rgba(59,130,246,.18),transparent 60%),radial-gradient(820px 520px at 110% 110%,rgba(34,211,238,.10),transparent 55%),#070b12;",
+    "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;color:#e6edf3}",
+    "#agy-accounts-gate:before{content:'';position:absolute;inset:0;pointer-events:none;",
+    "background-image:linear-gradient(rgba(148,163,184,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(148,163,184,.045) 1px,transparent 1px);",
+    "background-size:44px 44px;-webkit-mask-image:radial-gradient(circle at 50% 40%,#000,transparent 76%);mask-image:radial-gradient(circle at 50% 40%,#000,transparent 76%)}",
+    "#agy-accounts-gate .agy-gate-card{position:relative;width:100%;max-width:424px;padding:30px;border-radius:24px;",
+    "background:linear-gradient(180deg,rgba(17,25,40,.97),rgba(10,16,27,.99));border:1px solid rgba(148,163,184,.16);",
+    "box-shadow:0 30px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.04)}",
+    "#agy-accounts-gate .agy-gate-brand{display:flex;align-items:center;gap:12px;margin-bottom:26px}",
+    "#agy-accounts-gate .agy-gate-logo{width:44px;height:44px;border-radius:14px;display:grid;place-items:center;flex:0 0 auto;",
+    "background:linear-gradient(135deg,#3b82f6,#22d3ee);color:#fff;font-weight:800;font-size:19px;box-shadow:0 8px 22px rgba(59,130,246,.35)}",
+    "#agy-accounts-gate .agy-gate-brand strong{display:block;font-size:15px;letter-spacing:-.01em}",
+    "#agy-accounts-gate .agy-gate-brand small{display:block;color:#94a3b8;font-size:11px;margin-top:2px}",
+    "#agy-accounts-gate h1{font-size:24px;line-height:1.25;margin:0 0 8px;letter-spacing:-.02em}",
+    "#agy-accounts-gate p.agy-gate-sub{color:#94a3b8;font-size:13px;line-height:1.6;margin:0 0 18px}",
+    "#agy-accounts-gate .agy-gate-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 22px}",
+    "#agy-accounts-gate .agy-gate-chips span{font-size:11px;color:#cbd5e1;background:rgba(148,163,184,.10);",
+    "border:1px solid rgba(148,163,184,.12);padding:5px 9px;border-radius:999px}",
+    "#agy-accounts-gate label{display:block;color:#94a3b8;font-size:12px;margin-bottom:7px}",
+    "#agy-accounts-gate .agy-gate-field{position:relative;display:flex;align-items:center}",
+    "#agy-accounts-gate input{width:100%;box-sizing:border-box;padding:12px 58px 12px 14px;border-radius:12px;",
+    "border:1px solid rgba(148,163,184,.22);background:#0a111c;color:#e6edf3;font-size:15px;outline:none;transition:border-color .15s,box-shadow .15s}",
+    "#agy-accounts-gate input::placeholder{color:#64748b}",
+    "#agy-accounts-gate input:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.12)}",
+    "#agy-accounts-gate .agy-gate-eye{position:absolute;right:8px;border:0;background:transparent;color:#94a3b8;",
+    "font-size:12px;cursor:pointer;padding:7px 9px;border-radius:8px}",
+    "#agy-accounts-gate .agy-gate-eye:hover{color:#e2e8f0;background:rgba(148,163,184,.10)}",
+    "#agy-accounts-gate .agy-gate-submit{width:100%;margin-top:16px;padding:12px;border:0;border-radius:12px;",
+    "background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;font-weight:700;font-size:14px;cursor:pointer;",
+    "display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 10px 24px rgba(37,99,235,.30);transition:filter .15s,transform .15s}",
+    "#agy-accounts-gate .agy-gate-submit:hover{filter:brightness(1.06)}",
+    "#agy-accounts-gate .agy-gate-submit:active{transform:translateY(1px)}",
+    "#agy-accounts-gate .agy-gate-submit:disabled{opacity:.62;cursor:not-allowed;transform:none;filter:none}",
+    "#agy-accounts-gate .agy-gate-arrow{font-size:16px;line-height:1}",
+    "#agy-accounts-gate .agy-gate-busy .agy-gate-arrow{animation:agy-gate-pulse 1s ease-in-out infinite}",
+    "@keyframes agy-gate-pulse{0%,100%{opacity:.35;transform:translateX(0)}50%{opacity:1;transform:translateX(3px)}}",
+    "#agy-accounts-gate .agy-gate-note{margin-top:14px;color:#94a3b8;font-size:12px;line-height:1.5;min-height:18px}",
+    "#agy-accounts-gate .agy-gate-note.agy-gate-error{color:#f87171}",
+    "#agy-accounts-gate .agy-gate-foot{margin-top:22px;padding-top:16px;border-top:1px solid rgba(148,163,184,.12);",
+    "display:flex;align-items:center;justify-content:space-between;color:#64748b;font-size:11px}",
     "[data-tauri-drag-region]{display:none!important}",
     "#agy-tools{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:2147482000;display:flex;gap:6px;align-items:center;",
     "padding:6px;border-radius:12px;background:rgba(20,30,43,.92);border:1px solid #243247;",

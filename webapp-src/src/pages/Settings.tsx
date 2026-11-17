@@ -103,7 +103,8 @@ function Settings() {
 
     const content: Record<SettingsSection, React.ReactNode> = {
         general: (
-            <div className="space-y-6">
+            <div className="grid gap-6 xl:grid-cols-2 xl:items-start">
+                <div className="min-w-0 space-y-6">
                 <NetworkSettings />
                 {/* 1. 界面外观与语言 */}
                 <section className="rounded-2xl border border-gray-200/80 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800 dark:bg-slate-900/80">
@@ -181,14 +182,18 @@ function Settings() {
                 </section>
 
                 <PasswordSettings />
+                </div>
 
+                <div className="min-w-0 space-y-6">
                 <UpdateSettings />
 
                 <FailoverSettings />
 
                 {/* 2. 桌面与系统窗口 */}
                 <DashboardSettings />
+                </div>
 
+                <div className="min-w-0 xl:col-span-2">
                 {/* 3. 数据存储与关联应用 */}
                 <section className="rounded-2xl border border-gray-200/80 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800 dark:bg-slate-900/80 space-y-5">
                     <div className="flex items-start gap-3">
@@ -291,10 +296,11 @@ function Settings() {
                         </div>
                     </div>
                 </section>
+                </div>
             </div>
         ),
         quota: (
-            <div className="space-y-6">
+            <div className="grid gap-6 xl:grid-cols-2 xl:items-start">
                 {/* 1. 卡片与列表展示模型 */}
                 <ModelDisplaySettings embedded />
 

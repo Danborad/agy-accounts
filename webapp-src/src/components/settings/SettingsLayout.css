@@ -61,7 +61,7 @@
 
 .settings-panel {
   width: 100%;
-  max-width: 780px;
+  max-width: none;
   margin: 0;
   outline-offset: 4px;
 }
