@@ -13,9 +13,22 @@
                           window.location.hash.includes('menubar') || 
                           window.location.search.includes('menubar') ||
                           window.location.href.includes('menubar');
-        const savedTheme = localStorage.getItem('app-theme-preference');
+        let savedTheme = localStorage.getItem('app-theme-preference');
+        // 旧版本默认强制深色；首次升级时把默认主题迁回浅色，之后尊重用户手动选择。
+        if (!localStorage.getItem('agy-accounts-theme-light-v1')) {
+          savedTheme = 'light';
+          localStorage.setItem('app-theme-preference', 'light');
+          try {
+            const stored = JSON.parse(localStorage.getItem('agy-accounts-web-config') || 'null');
+            if (stored && typeof stored === 'object') {
+              stored.theme = 'light';
+              localStorage.setItem('agy-accounts-web-config', JSON.stringify(stored));
+            }
+          } catch (e) { /* ignore */ }
+          localStorage.setItem('agy-accounts-theme-light-v1', '1');
+        }
         const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        const shouldBeDark = savedTheme === 'dark' || ((!savedTheme || savedTheme === 'system') && systemDark);
+        const shouldBeDark = savedTheme === 'dark' || (savedTheme === 'system' && systemDark);
 
         if (isMenubar) {
           document.documentElement.classList.add('panel-window');
@@ -40,7 +53,7 @@
   <style>
     /* Critical CSS: Initial splash background for main window only */
     html:not(.panel-window) {
-      background-color: #1a1f2e;
+      background-color: #FAFBFC;
     }
     html.panel-window,
     html.panel-window body,
