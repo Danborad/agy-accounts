@@ -5,6 +5,7 @@ import { isTauri, isLinux } from '../../utils/env';
 import { NavLogo } from './NavLogo';
 import { NavMenu } from './NavMenu';
 import { NavSettings } from './NavSettings';
+import UpdateButton from './UpdateButton';
 import type { NavItem } from './constants';
 
 /**
@@ -116,6 +117,7 @@ function Navbar() {
 
                     {/* 设置按钮 - 自己处理响应式 */}
                     <div className="ml-auto flex shrink-0 items-center gap-2">
+                        <UpdateButton />
                         <NavSettings
                             theme={(config?.theme as 'light' | 'dark') || 'light'}
                             currentLanguage={config?.language?.toLowerCase().startsWith('en') ? 'en' : 'zh'}

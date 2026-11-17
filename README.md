@@ -86,6 +86,7 @@ Antigravity 在机器上的状态分三层：
 - 保存当前登录为命名快照（右下角工具栏，自动识别邮箱）
 - 一键切换：停止 → 替换 → 启动 → 探测，全程串行
 - 当前账号被 Google 判定不可用 / 需要验证时，自动尝试其它已保存账号（默认开启，可在设置页关闭）
+- Antigravity 更新提醒：顶部导航与设置页均可检查更新、更新并重启
 - 失败自动回滚：任何一步出错都恢复原令牌并尽量拉起服务
 - 重命名 / 编辑备注（只改显示名，目录 ID 不变）
 - 删除快照（不触碰线上令牌与业务数据）
@@ -304,6 +305,8 @@ python3 agy_accounts.py --version
 | `GET` | `/api/usage` | 本地 Token 用量汇总；`?refresh=1` 绕过 60 秒缓存 |
 | `GET/POST` | `/api/preferences` | 服务端保存首页卡片选择 |
 | `GET/POST` | `/api/failover` | 查询 / 开关「账号失效自动切换」 |
+| `GET` | `/api/update` | 查询当前与待应用的 Antigravity 版本 |
+| `POST` | `/api/update` | `{"action":"check"}` 检查官方更新；`{"action":"apply"}` 更新并重启 |
 | `POST` | `/api/accounts` | `{"name":"..."}` 保存当前登录 |
 | `POST` | `/api/accounts/{id}/switch` | 切换账号 |
 | `POST` | `/api/accounts/{id}/rename` | `{"name":"..."}` 改显示名 |

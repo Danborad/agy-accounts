@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.9.5] - 2026-11-17
+
+### 新增
+
+- 顶部导航显示 Antigravity 更新提醒，点击可更新并重启
+- 设置页新增「Antigravity 更新」卡片，可检查更新、查看当前版本
+- 后端新增 `/api/update`，复用 agy-server 官方更新通道
+- 版本 1.9.5
+
 ## [1.9.4] - 2026-11-17
 
 ### 新增

@@ -9,6 +9,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import DashboardSettings from '../components/settings/DashboardSettings';
 import FailoverSettings from '../components/settings/FailoverSettings';
 import PasswordSettings from '../components/settings/PasswordSettings';
+import UpdateSettings from '../components/settings/UpdateSettings';
 import ModelDisplaySettings from '../components/settings/ModelDisplaySettings';
 import NetworkSettings from '../components/settings/NetworkSettings';
 import SettingsNavigation, { SETTINGS_SECTIONS, SettingsSection } from '../components/settings/SettingsNavigation';
@@ -180,6 +181,8 @@ function Settings() {
                 </section>
 
                 <PasswordSettings />
+
+                <UpdateSettings />
 
                 <FailoverSettings />
 

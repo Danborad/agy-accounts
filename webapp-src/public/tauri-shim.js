@@ -716,6 +716,18 @@
           body: JSON.stringify({ enabled: args.enabled === true })
         });
       }
+      case "get_update":
+        return await api("/api/update");
+      case "check_update":
+        return await api("/api/update", {
+          method: "POST",
+          body: JSON.stringify({ action: "check" })
+        });
+      case "apply_update":
+        return await api("/api/update", {
+          method: "POST",
+          body: JSON.stringify({ action: "apply" })
+        });
       case "set_desktop_preferences":
       case "set_menu_bar_preferences":
       case "open_data_folder":

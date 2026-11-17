@@ -545,5 +545,17 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(state["state"], "disabled")
 
 
+    def test_update_endpoint_shape(self):
+        self.login()
+        status, data, _ = self.request("GET", "/api/update")
+        self.assertEqual(status, 200)
+        self.assertIn("running", data)
+        self.assertIn("latest", data)
+        self.assertIn("available", data)
+
+        status, data, _ = self.request("POST", "/api/update", {"action": "unknown"})
+        self.assertEqual(status, 400)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

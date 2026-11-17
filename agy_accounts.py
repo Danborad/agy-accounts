@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.9.4"
+VERSION = "1.9.5"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -1719,6 +1719,132 @@ def failover_loop(manager: FailoverManager) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Antigravity 核心更新
+# ---------------------------------------------------------------------------
+
+def running_language_server_version() -> str:
+    """从正在运行的 language_server 命令行读取版本。"""
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return ""
+    for name in entries:
+        if not name.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % name, "rb") as handle:
+                raw = handle.read().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "--standalone" not in raw or "--override_ide_version" not in raw:
+            continue
+        parts = [part for part in raw.split("\0") if part]
+        for index, part in enumerate(parts):
+            if part == "--override_ide_version" and index + 1 < len(parts):
+                return parts[index + 1]
+            if part.startswith("--override_ide_version="):
+                return part.split("=", 1)[1]
+    return ""
+
+
+def staged_language_server_version() -> str:
+    base = expand_path(os.environ.get("AGY_HOME") or "~/.agy-remote")
+    data = read_json(os.path.join(base, "updater-state.json"))
+    return str(data.get("staged_version") or "")
+
+
+def update_status() -> Dict[str, Any]:
+    running = running_language_server_version()
+    staged = staged_language_server_version()
+    latest = staged or running
+    return {
+        "running": running,
+        "latest": latest,
+        "staged": staged,
+        "available": bool(staged and running and staged != running),
+        "binary": "/usr/local/bin/agy-server",
+    }
+
+
+def agy_server_binary() -> str:
+    return shutil.which("agy-server") or "/usr/local/bin/agy-server"
+
+
+def _update_output(proc: subprocess.CompletedProcess) -> str:
+    text = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    return text[-1200:]
+
+
+def check_official_update() -> Dict[str, Any]:
+    """调用 agy-server update -check 查询官方最新版本。"""
+    try:
+        proc = subprocess.run([agy_server_binary(), "update", "-check"],
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ApiError(502, "检查更新失败：%s" % exc.__class__.__name__)
+    output = _update_output(proc)
+    latest = ""
+    installed = ""
+    for line in output.splitlines():
+        match = re.search(r"Latest version\s*:\s*([0-9][^\s]*)", line)
+        if match:
+            latest = match.group(1)
+        match = re.search(r"Installed version\s*:\s*([0-9][^\s]*)", line)
+        if match:
+            installed = match.group(1)
+    if proc.returncode != 0 or not latest:
+        raise ApiError(502, "检查更新失败：%s" % (output[-300:] or "无输出"))
+    running = running_language_server_version() or installed
+    return {
+        "running": running,
+        "latest": latest,
+        "staged": staged_language_server_version(),
+        "available": bool(latest and latest != running),
+        "output": output,
+    }
+
+
+def apply_language_server_update(cfg: Dict[str, Any], lock: threading.Lock) -> Dict[str, Any]:
+    """更新官方 language_server，并重启 agy-server 让新版本生效。"""
+    if not lock.acquire(blocking=False):
+        raise ApiError(409, "更新正在进行，请稍候")
+    try:
+        before = update_status()
+        try:
+            proc = subprocess.run([agy_server_binary(), "update", "-yes"],
+                                  capture_output=True, text=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ApiError(502, "更新下载失败：%s" % exc.__class__.__name__)
+        output = _update_output(proc)
+        if proc.returncode != 0:
+            raise ApiError(502, "更新失败：%s" % (output[-400:] or "无输出"))
+
+        log.warning("开始重启 agy-server 应用 Antigravity 更新")
+        try:
+            stop_service(cfg)
+            start_service(cfg)
+            probe_service(cfg)
+        except SwitchError as exc:
+            raise ApiError(exc.status if exc.status >= 400 else 504,
+                           "更新已下载，但重启失败：%s" % exc.message,
+                           {"detail": exc.detail} if exc.detail else None)
+
+        after = update_status()
+        log.warning("Antigravity 更新完成：%s -> %s", before.get("running"),
+                    after.get("running"))
+        return {
+            "running": after.get("running") or "",
+            "latest": after.get("latest") or "",
+            "staged": after.get("staged") or "",
+            "available": bool(after.get("available")),
+            "message": "已更新并重启" if after.get("running") else "已重启",
+            "output": output,
+        }
+    finally:
+        lock.release()
+
+
+# ---------------------------------------------------------------------------
 # 本地 Token 用量（读取 Antigravity 会话数据库）
 # ---------------------------------------------------------------------------
 
@@ -2134,6 +2260,10 @@ class PanelHandler(BaseHTTPRequestHandler):
                     "status": self.app.failover.state(),
                 })
                 return
+            if path == "/api/update":
+                self._require_auth()
+                self._json(200, dict(update_status(), ok=True))
+                return
             if path == "/api/usage":
                 self._require_auth()
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -2193,6 +2323,18 @@ class PanelHandler(BaseHTTPRequestHandler):
                     "enabled": enabled,
                     "status": self.app.failover.state(),
                 })
+                return
+            if path == "/api/update":
+                body = self._read_body()
+                action = str(body.get("action") or "apply")
+                if action == "check":
+                    result = check_official_update()
+                elif action == "apply":
+                    result = apply_language_server_update(self.app.cfg,
+                                                          self.app.update_lock)
+                else:
+                    raise ApiError(400, "action 必须是 check 或 apply")
+                self._json(200, dict(result, ok=True))
                 return
             if path == "/api/preferences":
                 body = self._read_body()
@@ -2320,6 +2462,7 @@ class App:
         self.quota = QuotaManager(cfg, self.switcher)
         self.usage = UsageStats(cfg)
         self.failover = FailoverManager(cfg, self.switcher)
+        self.update_lock = threading.Lock()
 
     def status_payload(self) -> Dict[str, Any]:
         accounts = list_accounts(self.cfg)
