@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.9.9] - 2026-11-17
+
+### 调整
+
+- 汉化引擎切换为 antigravity-cn-community/Antigravity-Chinese-Localization 的 Web UI DOM 注入部分
+- 覆盖约 5000 条文案，同步上游 v2.32.2.1
+- 保留 `?no-i18n=1` / `?i18n=1` 与 localStorage 开关
+- 注入脚本启用 gzip，并新增 `scripts/update-i18n.mjs` 同步上游
+- 版本 1.9.9
+
 ## [1.9.8] - 2026-11-17
 
 ### 修复

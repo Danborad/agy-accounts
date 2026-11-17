@@ -29,3 +29,20 @@ Modifications: Vite base path changed to "/", page title changed, a new
 tauri-shim.js HTTP bridge was added, a group-level quota component and a
 "保存当前" snapshot button were added, and the Rust/Tauri backend was omitted
 and replaced by that bridge. See webapp-src/README.md for details.
+
+
+--------------------------------------------------------------------------
+Third-party Chinese localization engine
+
+i18n/agy-i18n.js contains the DOM translator payload extracted from
+antigravity-cn-community/Antigravity-Chinese-Localization
+(upstream v2.32.2.1), with a small wrapper for agy-accounts' URL/localStorage
+toggle. It is loaded by the Nginx injection proxy and does not modify the
+Antigravity installation or app.asar.
+
+  https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization
+  Copyright (c) 2026 aabbWei
+  Copyright (c) 2026 antigravity-cn-community contributors
+  Licensed under the MIT License
+
+The upstream project is not affiliated with or endorsed by Google.

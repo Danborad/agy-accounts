@@ -385,14 +385,19 @@ journalctl -u agy-accounts -f
 - 原站入口：`http://服务器地址:8765/`
 - 临时关闭汉化：网址后加 `?no-i18n=1`
 - 恢复汉化：网址后加 `?i18n=1`
-- 词库：`i18n/zh-CN.json`（外置，升级只需替换词库）
 - 脚本：`i18n/agy-i18n.js`
 
-保护规则：只翻译精确匹配的界面文案；跳过 `pre` / `code` / 终端 / `textarea` / 输入框 / 可编辑区域 / Markdown 正文 / 会话正文 / 会话标题与项目名。模型名、文件路径、代码和用户输入不会被改写。
+当前汉化引擎来自
+[antigravity-cn-community/Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization)
+的 Web UI DOM 注入部分（MIT License，上游 v2.32.2.1）。该项目原本通过替换 Electron `app.asar` 汉化桌面客户端；
+本项目只取出其中自包含的 `DOM_TRANSLATOR_INJECTION`，由 Nginx 注入网页，不执行 `app.asar` 替换，也不修改官方安装目录。
 
-当前词库适配 Antigravity 2.32.1，覆盖侧栏、首页、模型菜单、Usage 面板、设置页主要文案。上游升级后如果新增文案，会保持英文而不是乱译；按项目说明第十二章做一次界面回归即可。
+- 约 5000 条词库与动态正则，覆盖侧栏、规划模式、设置、权限沙盒、插件市场、Remote SSH 等
+- 汉化词典内置于 `i18n/agy-i18n.js`；`i18n/zh-CN.json` 是旧版外置词库，保留用于兼容
+- 保护输入框、代码块、Monaco 编辑器、用户对话正文、项目名与模型名
+- 上游更新后执行 `node scripts/update-i18n.mjs`，再安装脚本并重启 `agy-i18n-proxy` 即可同步
 
-安装脚本会安装 `nginx-light`（如果尚未安装），并禁用系统默认 nginx 服务，改用独立单元 `agy-i18n-proxy.service` 监听 8766，不影响 NAS 自带的 443 Nginx。
+安装脚本会安装 `nginx-light`（如果尚未安装），并禁用系统默认 nginx 服务，改用独立单元 `agy-i18n-proxy.service` 监听 8766，不影响 NAS 自带的 443 Nginx。注入脚本已启用 gzip。
 
 ## 验收与测试
 
@@ -442,5 +447,6 @@ python3 -m unittest discover -s tests -v
 - [AFSlayer/antigravity-server](https://github.com/AFSlayer/antigravity-server)：提供 Antigravity 网页入口与鉴权。
 - [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)：Antigravity 额度端点与逐模型探测逻辑的参考。
 - [anglee0323/agy-switch](https://github.com/anglee0323/agy-switch)：`webapp-src/` 与 `webapp/` 的前端来源，同一 CC BY-NC-SA 4.0 许可；本项目补充了 Tauri → HTTP 桥接并做了少量构建调整，详见 `NOTICE` 与 `webapp-src/README.md`。
+- [antigravity-cn-community/Antigravity-Chinese-Localization](https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization)：`i18n/agy-i18n.js` 的 Web UI DOM 翻译引擎与词库来源，MIT 许可；本项目只使用其浏览器注入部分，不执行 `app.asar` 替换。
 
 与 Google、AFSlayer/antigravity-server 及上述社区项目均无隶属关系，仅为个人自托管的组合方案。
