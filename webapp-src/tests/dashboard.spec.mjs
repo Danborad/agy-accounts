@@ -86,6 +86,26 @@ test('性能指标有值，主题和汉化命令不写卡片设置', async ({ pa
 });
 
 for (const width of [390, 1920]) {
+    test(`设置页隐藏滚动条但仍能滚动（${width}px）`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 700 });
+        await openDashboard(page, 6);
+        await page.goto(new URL('/settings', pageUrl).href);
+        await expect(page.locator('#settings-panel-general')).toBeVisible();
+        const scroller = page.locator(width < 640 ? '.settings-layout' : '.settings-content');
+        const scrollState = await scroller.evaluate(element => ({
+            overflow: getComputedStyle(element).overflowY,
+            scrollbar: getComputedStyle(element).scrollbarWidth,
+            webkitScrollbar: getComputedStyle(element, '::-webkit-scrollbar').display,
+            hasOverflow: element.scrollHeight > element.clientHeight,
+        }));
+        expect(scrollState).toEqual({
+            overflow: 'auto', scrollbar: 'none', webkitScrollbar: 'none', hasOverflow: true,
+        });
+        await scroller.hover();
+        await page.mouse.wheel(0, 500);
+        await expect.poll(() => scroller.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+    });
+
     test(`设置页与首页、账号页宽度一致（${width}px）`, async ({ page }) => {
         await page.setViewportSize({ width, height: 900 });
         await openDashboard(page, 6);
