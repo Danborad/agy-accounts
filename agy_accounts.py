@@ -27,6 +27,7 @@ import shutil
 import signal
 import sqlite3
 import ssl
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -37,11 +38,12 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.9.10"
+VERSION = "1.9.12"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -89,6 +91,7 @@ DEFAULTS: Dict[str, Any] = {
     "login_window": 300,
     "log_level": "INFO",
     "auto_failover": True,
+    "auto_failover_last_good": "",
 }
 
 ENV_OVERRIDES = {
@@ -111,6 +114,8 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 JWT_RE = re.compile(r"^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*$")
 
 log = logging.getLogger("agy-accounts")
+CONFIG_LOCK = threading.RLock()
+PREFERENCES_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +139,26 @@ class SwitchError(Exception):
         self.status = status
         self.rolled_back = rolled_back
         self.detail = detail
+
+
+class ServiceOperationLock:
+    """切号、服务恢复和更新共用；繁忙时返回 409，不排队。"""
+
+    def __init__(self):
+        self._guard = threading.Lock()
+        self._operation = ""
+
+    @contextmanager
+    def hold(self, operation: str) -> Iterator[None]:
+        with self._guard:
+            if self._operation:
+                raise ApiError(409, "正在执行%s，请等待当前操作完成。" % self._operation)
+            self._operation = operation
+        try:
+            yield
+        finally:
+            with self._guard:
+                self._operation = ""
 
 
 def now() -> int:
@@ -172,6 +197,16 @@ def read_bytes(path: str) -> Optional[bytes]:
     except OSError as exc:
         log.warning("读取文件失败 %s: %s", path, exc.__class__.__name__)
         return None
+
+
+def read_live_token(cfg: Dict[str, Any]) -> Optional[bytes]:
+    try:
+        with open(cfg["token_path"], "rb") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ApiError(500, "无法读取线上令牌，请检查文件与目录权限。") from exc
 
 
 def write_atomic(path: str, data: bytes, mode: int = 0o600) -> None:
@@ -281,11 +316,21 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
 def update_config(cfg: Dict[str, Any], **updates: Any) -> None:
     """更新少量配置项并写回文件，用于面板设置页。"""
     path = cfg.get("config_path") or config_path()
-    stored = read_json(path)
-    for key, value in updates.items():
-        stored[key] = value
-        cfg[key] = value
-    write_json_atomic(path, stored, 0o600)
+    with CONFIG_LOCK:
+        try:
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    stored = json.load(handle)
+            except FileNotFoundError:
+                stored = {}
+            if not isinstance(stored, dict):
+                raise ValueError("configuration is not a JSON object")
+            stored.update(updates)
+            write_json_atomic(path, stored, 0o600)
+        except (OSError, ValueError) as exc:
+            log.warning("保存配置失败：%s", exc.__class__.__name__)
+            raise ApiError(500, "无法保存配置，请检查配置文件格式和写入权限。") from exc
+        cfg.update(updates)
 
 
 def preferences_path(cfg: Dict[str, Any]) -> str:
@@ -330,21 +375,19 @@ def save_preferences(cfg: Dict[str, Any], data: Dict[str, Any]) -> Dict[str, Any
         raise ApiError(400, "卡片数量过多")
     if data.get("manual") is not True:
         raise ApiError(400, "仅支持在设置页手动保存卡片")
-    try:
-        client_rev = int(data.get("rev"))
-    except (TypeError, ValueError):
+    client_rev = data.get("rev")
+    if type(client_rev) is not int or client_rev < 0:
         raise ApiError(409, "设置版本缺失，请刷新页面后重试")
-    current = load_preferences(cfg)
-    current_rev = int(current.get("rev") or 0)
-    if client_rev != current_rev:
-        raise ApiError(409, "设置已在其它页面更新，请刷新后再保存")
     cards = [str(x)[:80] for x in cards]
     order = [str(x)[:80] for x in order]
     # 空选择可能是旧页面或异常请求写回，拒绝而不是静默改回默认。
     if not cards:
         raise ApiError(400, "至少保留一张首页卡片")
-    payload = {"rev": current_rev + 1, "dashboard": {"cards": cards, "order": order}}
-    write_json_atomic(preferences_path(cfg), payload, 0o600)
+    with PREFERENCES_LOCK:
+        if client_rev != load_preferences(cfg)["rev"]:
+            raise ApiError(409, "设置已在其它页面更新，请刷新后再保存")
+        payload = {"rev": client_rev + 1, "dashboard": {"cards": cards, "order": order}}
+        write_json_atomic(preferences_path(cfg), payload, 0o600)
     log.info("卡片偏好已更新：rev=%d cards=%d order=%d [%s]",
              payload["rev"], len(cards), len(order), ",".join(cards))
     return payload
@@ -408,20 +451,16 @@ def check_password(cfg: Dict[str, Any], password: str) -> bool:
 
 
 def change_password(cfg: Dict[str, Any], current: str, new_password: str) -> None:
-    if not check_password(cfg, current):
-        raise ApiError(403, "当前密码不正确")
+    if os.environ.get("AGY_ACCOUNTS_PASSWORD"):
+        raise ApiError(409, "面板密码由环境变量管理，请修改 AGY_ACCOUNTS_PASSWORD 并重启面板。")
     if not isinstance(new_password, str) or len(new_password) < 8:
         raise ApiError(400, "新密码至少 8 个字符")
     if len(new_password) > 256:
         raise ApiError(400, "新密码过长")
-    digest = hash_password(new_password)
-    cfg["password_hash"] = digest
-    cfg["password"] = ""
-    path = cfg.get("config_path") or config_path()
-    stored = read_json(path)
-    stored["password_hash"] = digest
-    stored["password"] = ""
-    write_json_atomic(path, stored, 0o600)
+    with CONFIG_LOCK:
+        if not check_password(cfg, current):
+            raise ApiError(403, "当前密码不正确")
+        update_config(cfg, password_hash=hash_password(new_password), password="")
     log.info("面板密码已更新")
 
 
@@ -1217,9 +1256,7 @@ def find_account_by_name(cfg: Dict[str, Any], name: str, exclude: str = "") -> O
 
 def save_account(cfg: Dict[str, Any], name: str) -> Dict[str, Any]:
     name = _clean_name(name)
-    live = read_bytes(cfg["token_path"])
-    if live is None and os.path.exists(cfg["token_path"]):
-        raise ApiError(500, "令牌文件存在但不可读，请检查权限：%s" % cfg["token_path"])
+    live = read_live_token(cfg)
     if not live or not live.strip():
         raise ApiError(400, "当前没有可保存的登录令牌：%s 不存在或为空。"
                             "请先在 Antigravity 页面完成 Google 登录。" % cfg["token_path"])
@@ -1346,17 +1383,13 @@ def service_active(cfg: Dict[str, Any]) -> Optional[bool]:
 def stop_service(cfg: Dict[str, Any]) -> None:
     commands = service_commands(cfg)
     run_command(cfg, commands["stop"], cfg["command_timeout"])
-    deadline = time.time() + max(3, cfg["stop_timeout"])
-    while time.time() < deadline:
+    deadline = time.monotonic() + max(3, cfg["stop_timeout"])
+    while time.monotonic() < deadline:
         active = service_active(cfg)
         if active is False:
             return
-        if active is None:
-            log.warning("无法确认服务是否已停止（status 命令返回未知），继续前等待 1 秒")
-            time.sleep(1.0)
-            return
         time.sleep(0.4)
-    raise SwitchError("服务在 %ds 内仍未停止" % cfg["stop_timeout"], 504)
+    raise SwitchError("未能在 %ds 内确认服务已停止" % cfg["stop_timeout"], 504)
 
 
 def start_service(cfg: Dict[str, Any]) -> None:
@@ -1391,9 +1424,9 @@ def probe_service(cfg: Dict[str, Any]) -> None:
 class Switcher:
     """串行执行切换；切换期间第二次请求直接收到 409。"""
 
-    def __init__(self, cfg: Dict[str, Any]):
+    def __init__(self, cfg: Dict[str, Any], operation_lock: Optional[ServiceOperationLock] = None):
         self.cfg = cfg
-        self._lock = threading.Lock()
+        self.operation_lock = operation_lock or ServiceOperationLock()
         self.token_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._state: Dict[str, Any] = {"active": False, "started_at": 0, "account": ""}
@@ -1403,92 +1436,131 @@ class Switcher:
             return dict(self._state)
 
     def switch(self, account_id: str) -> Dict[str, Any]:
-        if not self._lock.acquire(blocking=False):
-            raise ApiError(409, "正在切换账号，请等待当前操作完成。")
+        with self.operation_lock.hold("账号切换"):
+            return self.switch_locked(account_id)
+
+    def switch_locked(self, account_id: str) -> Dict[str, Any]:
+        """调用方已持有服务操作锁；与额度回写互斥直至验证或回滚完成。"""
         with self._state_lock:
             self._state = {"active": True, "started_at": now(), "account": account_id}
         try:
-            return self._do_switch(account_id)
+            with self.token_lock:
+                return self._switch_transaction(account_id)
         finally:
             with self._state_lock:
                 self._state = {"active": False, "started_at": 0, "account": ""}
-            self._lock.release()
 
-    def _do_switch(self, account_id: str) -> Dict[str, Any]:
-        # 与额度刷新共用：避免额度回写线上令牌和切换事务交叉。
-        with self.token_lock:
-            return self._switch_transaction(account_id)
+    @staticmethod
+    def _record_use(path: str, meta: Dict[str, Any]) -> None:
+        try:
+            touch_account(path, meta)
+        except OSError as exc:
+            log.warning("更新快照使用时间失败：%s", exc.__class__.__name__)
+
+    def _verify(self) -> None:
+        auth = wait_language_server_auth(self.cfg)
+        if auth is None:
+            raise SwitchError("未能确认目标账号登录成功", 504)
+        if not auth["signed_in"]:
+            raise SwitchError(auth["message"] or "目标账号不可用，需要验证", 422)
+
+    def _save_recovery_token(self, token: bytes) -> str:
+        # Use unique files so subsequent attempts cannot overwrite an earlier failed rollback.
+        directory = ensure_dir(os.path.join(self.cfg["config_home"], "switch-recovery"))
+        path = os.path.join(directory, secrets.token_hex(16) + ".token")
+        write_atomic(path, token, 0o600)
+        return path
+
+    @staticmethod
+    def _remove_recovery_token(path: str) -> None:
+        if not path:
+            return
+        try:
+            os.unlink(path)
+        except OSError as exc:
+            log.warning("无法清理切号恢复备份 %s：%s", path, exc.__class__.__name__)
 
     def _switch_transaction(self, account_id: str) -> Dict[str, Any]:
         cfg = self.cfg
         path, target, meta = read_target_token(cfg, account_id)
         name = str(meta.get("name") or account_id)
 
-        live = read_bytes(cfg["token_path"])
-        if live is None and os.path.exists(cfg["token_path"]):
-            raise ApiError(500, "令牌文件存在但不可读，请检查权限：%s" % cfg["token_path"])
+        live = read_live_token(cfg)
         if live is not None and same_login(live, target):
+            try:
+                self._verify()
+            except SwitchError as exc:
+                raise ApiError(exc.status, exc.message + "；线上凭据未改动",
+                               {"unchanged": True}) from exc
             if live != target:
-                write_atomic(account_token_path(path), live, 0o600)
-                log.info("线上令牌已刷新，快照同步更新 id=%s", account_id)
-            touch_account(path, meta)
+                try:
+                    write_atomic(account_token_path(path), live, 0o600)
+                except OSError as exc:
+                    log.warning("同步快照失败 id=%s：%s", account_id, exc.__class__.__name__)
+            self._record_use(path, meta)
             return {"ok": True, "already_current": True, "name": name,
                     "message": "当前已经是「%s」" % name}
 
         log.info("开始切换账号 id=%s live=%s target=%s", account_id,
                  token_label(live), token_label(target))
 
-        if live:
-            rotated = sync_rotated_token(cfg, live)
-            if rotated:
-                log.info("已把轮换后的线上令牌写回快照 id=%s", rotated)
-
         backup = live
+        recovery_path = ""
         stopped = False
         mutated = False
         try:
+            if live:
+                sync_rotated_token(cfg, live)
             stop_service(cfg)
             stopped = True
-            if backup is None:
-                try:
-                    os.unlink(cfg["token_path"])
-                except FileNotFoundError:
-                    pass
+            # 服务可能在停止前完成一次令牌轮换，备份最后落盘的同一账号。
+            latest = read_live_token(cfg)
+            if latest and (not live or same_login(live, latest)):
+                backup = latest
+                if latest != live:
+                    sync_rotated_token(cfg, latest)
+            elif latest is not None and latest != live:
+                raise SwitchError("切换前检测到线上账号已变更，请重试", 409)
+            if backup is not None:
+                recovery_path = self._save_recovery_token(backup)
             write_atomic(cfg["token_path"], target, 0o600)
             mutated = True
             start_service(cfg)
             probe_service(cfg)
-        except SwitchError as exc:
-            if not stopped and not mutated:
-                log.error("切换未开始 id=%s：%s", account_id, exc.message)
-                extra = {"rolled_back": True, "unchanged": True}
-                if exc.detail:
-                    extra["detail"] = exc.detail
-                raise ApiError(exc.status, exc.message + "；线上凭据未改动", extra)
-            rolled_back = self._rollback(backup, stopped or mutated)
-            message = exc.message
-            if rolled_back:
+            self._verify()
+        except Exception as exc:
+            if not isinstance(exc, (SwitchError, ApiError, OSError)):
+                log.exception("切换出现未预期错误 id=%s", account_id)
+            status = exc.status if isinstance(exc, (ApiError, SwitchError)) else 500
+            message = "切换账号失败"
+            if isinstance(exc, (ApiError, SwitchError)):
+                message = exc.message
+            elif isinstance(exc, OSError):
+                message = "切换失败，无法读写凭据或快照，请检查权限"
+            if not stopped:
+                raise ApiError(status, message + "；线上凭据未改动",
+                               {"unchanged": True}) from exc
+            rolled_back = self._rollback(backup) if mutated else self._restart_original()
+            if not rolled_back:
+                message += "；回滚未完成，请手动检查服务与令牌文件"
+                if recovery_path:
+                    message += "，原凭据备份：%s" % recovery_path
+            elif mutated:
                 message += "；已回滚到切换前的凭据"
             else:
-                message += "；回滚未完成，请手动检查服务与令牌文件"
+                message += "；线上凭据未改动，原服务已启动"
             log.error("切换失败 id=%s：%s", account_id, message)
-            extra = {"rolled_back": rolled_back}
-            if exc.detail:
+            extra = {"rolled_back": rolled_back, "unchanged": not mutated}
+            if rolled_back:
+                self._remove_recovery_token(recovery_path)
+            elif recovery_path:
+                extra["recovery_path"] = recovery_path
+            if isinstance(exc, SwitchError) and exc.detail:
                 extra["detail"] = exc.detail
-            raise ApiError(exc.status, message, extra)
-        except Exception as exc:  # 未预期的文件/系统错误
-            log.exception("切换出现未预期错误 id=%s", account_id)
-            if not stopped and not mutated:
-                raise ApiError(500, "切换失败：%s；线上凭据未改动"
-                               % exc.__class__.__name__, {"rolled_back": True,
-                                                          "unchanged": True})
-            rolled_back = self._rollback(backup, stopped or mutated)
-            message = "切换失败：%s" % exc.__class__.__name__
-            message += ("；已回滚到切换前的凭据" if rolled_back
-                        else "；回滚未完成，请手动检查服务与令牌文件")
-            raise ApiError(500, message, {"rolled_back": rolled_back})
+            raise ApiError(status, message, extra) from exc
 
-        meta = touch_account(path, meta)
+        self._remove_recovery_token(recovery_path)
+        self._record_use(path, meta)
         log.info("账号切换完成 id=%s", account_id)
         return {
             "ok": True,
@@ -1499,15 +1571,22 @@ class Switcher:
             "message": "已切换到「%s」" % name,
         }
 
-    def _rollback(self, backup: Optional[bytes], need_stop: bool) -> bool:
+    def _restart_original(self) -> bool:
+        try:
+            start_service(self.cfg)
+            probe_service(self.cfg)
+        except SwitchError as exc:
+            log.error("回滚后恢复服务失败：%s", exc.message)
+            return False
+        return True
+
+    def _rollback(self, backup: Optional[bytes]) -> bool:
         cfg = self.cfg
-        ok = True
-        if need_stop:
-            try:
-                stop_service(cfg)
-            except SwitchError as exc:
-                log.error("回滚停止服务失败：%s", exc.message)
-                ok = False
+        try:
+            stop_service(cfg)
+        except SwitchError as exc:
+            log.error("回滚停止服务失败，未覆盖令牌：%s", exc.message)
+            return False
         try:
             if backup is None:
                 try:
@@ -1518,13 +1597,8 @@ class Switcher:
                 write_atomic(cfg["token_path"], backup, 0o600)
         except OSError as exc:
             log.error("回滚写入令牌失败：%s", exc.__class__.__name__)
-            ok = False
-        try:
-            start_service(cfg)
-        except SwitchError as exc:
-            log.error("回滚启动服务失败：%s", exc.message)
-            ok = False
-        return ok
+            return False
+        return self._restart_original()
 
 
 # ---------------------------------------------------------------------------
@@ -1536,13 +1610,23 @@ FAILOVER_COOLDOWN = 1800
 FAILOVER_AUTH_TIMEOUT = 30
 
 
-def language_server_auth(home: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def managed_service_process(cfg: Dict[str, Any], pid: int) -> bool:
+    unit = str(cfg.get("service_name") or "agy-server")
+    if not unit.endswith(".service"):
+        unit += ".service"
+    try:
+        with open("/proc/%d/cgroup" % pid, encoding="utf-8") as handle:
+            return any(unit in line.rstrip().split(":", 2)[-1].split("/") for line in handle)
+    except OSError:
+        return False
+
+
+def language_server_auth(cfg: Dict[str, Any], timeout: float = 5) -> Optional[Dict[str, Any]]:
     """询问语言服务器当前 Google 账号是否可用。
 
     只信任服务器明确给出的回答；连接失败或服务未就绪时返回 None。
     """
-    daemon_dir = os.path.join(home or os.path.expanduser("~"),
-                              ".gemini", "antigravity", "daemon")
+    daemon_dir = os.path.expanduser("~/.gemini/antigravity/daemon")
     candidates: List[Tuple[float, int, str]] = []
     try:
         names = os.listdir(daemon_dir)
@@ -1560,11 +1644,8 @@ def language_server_auth(home: Optional[str] = None) -> Optional[Dict[str, Any]]
         pid = data.get("pid")
         port = data.get("httpsPort")
         token = data.get("csrfToken")
-        if not isinstance(pid, int) or not isinstance(port, int) or not isinstance(token, str) or not token:
-            continue
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if (type(pid) is not int or pid <= 0 or type(port) is not int or not 0 < port <= 65535
+                or not isinstance(token, str) or not token or not managed_service_process(cfg, pid)):
             continue
         candidates.append((stat.st_mtime, port, token))
     if not candidates:
@@ -1581,20 +1662,33 @@ def language_server_auth(home: Optional[str] = None) -> Optional[Dict[str, Any]]
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                         urllib.request.HTTPSHandler(context=context))
     try:
-        with urllib.request.urlopen(request, timeout=20, context=context) as response:
+        with opener.open(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8") or "{}")
     except (OSError, ValueError, urllib.error.URLError):
         return None
-    result = payload.get("authResult")
+    result = payload.get("authResult") if isinstance(payload, dict) else None
     if not isinstance(result, dict):
         return None
     return {
-        "signed_in": bool(result.get("hasValidAuth")),
-        "ineligible": "ineligible" in result,
+        "signed_in": result.get("hasValidAuth") is True,
+        "ineligible": result.get("ineligible") not in (None, False),
         "message": str(result.get("uiMessage") or "").strip(),
         "checked_at": now(),
     }
+
+
+def wait_language_server_auth(cfg: Dict[str, Any],
+                              timeout: int = FAILOVER_AUTH_TIMEOUT) -> Optional[Dict[str, Any]]:
+    deadline = time.monotonic() + timeout
+    while (remaining := deadline - time.monotonic()) > 0:
+        auth = language_server_auth(cfg, timeout=min(5, remaining))
+        if auth is not None and (auth["signed_in"] or auth["ineligible"]):
+            return auth
+        time.sleep(max(0, min(2, deadline - time.monotonic())))
+    return None
 
 
 class FailoverManager:
@@ -1607,7 +1701,8 @@ class FailoverManager:
         self._state_lock = threading.Lock()
         self.last_attempt = 0.0
         self.unknown_streak = 0
-        self.last_good = ""
+        self.last_recovery = 0.0
+        self.last_good = str(cfg.get("auto_failover_last_good") or "")
         self._state: Dict[str, Any] = {
             "state": "idle", "message": "尚未检查", "at": 0,
             "from": "", "to": "",
@@ -1622,14 +1717,28 @@ class FailoverManager:
             self._state = {"state": state, "message": message, "at": now()}
             self._state.update(extra)
 
-    def _wait_auth(self, timeout: int = FAILOVER_AUTH_TIMEOUT) -> Optional[Dict[str, Any]]:
-        deadline = time.time() + max(5, timeout)
-        while time.time() < deadline:
-            auth = language_server_auth()
-            if auth is not None:
-                return auth
-            time.sleep(3)
-        return None
+    def _remember_good(self, account_id: str) -> None:
+        if not account_id or self.cfg.get("auto_failover_last_good") == account_id:
+            return
+        try:
+            update_config(self.cfg, auto_failover_last_good=account_id)
+        except ApiError as exc:
+            log.warning("记录最近可用账号失败：%s", exc.message)
+
+    def _recover_service(self) -> None:
+        self.last_recovery = time.monotonic()
+        self.unknown_streak = 0
+        log.warning("连续查询登录状态超时，只重启服务；保留当前账号凭据")
+        self._set("recovering", "登录状态无响应，正在重启语言服务器")
+        try:
+            stop_service(self.cfg)
+            start_service(self.cfg)
+            probe_service(self.cfg)
+        except SwitchError as exc:
+            log.error("语言服务器恢复失败：%s", exc.message)
+            self._set("recovery_failed", "语言服务器恢复失败：%s" % exc.message)
+        else:
+            self._set("recovered", "语言服务器已重启，账号未更换；登录状态将在下一轮检查")
 
     def check(self, force: bool = False) -> Dict[str, Any]:
         if not self.cfg.get("auto_failover", True):
@@ -1638,94 +1747,74 @@ class FailoverManager:
         if not self._lock.acquire(blocking=False):
             return self.state()
         try:
-            if not force and now() - self.last_attempt < FAILOVER_COOLDOWN:
-                return self.state()
-            self._set("checking", "正在检查当前账号")
-            auth = language_server_auth()
-            if auth is None:
-                self.unknown_streak += 1
-                if self.unknown_streak < 3:
-                    self._set("unknown", "暂时无法读取 Antigravity 登录状态")
-                    return self.state()
-                log.warning("连续 %d 次无法读取登录状态，按账号失效处理",
-                            self.unknown_streak)
-                auth = {"signed_in": False, "ineligible": True,
-                        "message": "语言服务器长时间无响应"}
-            else:
-                self.unknown_streak = 0
-                if auth["signed_in"]:
-                    accounts = list_accounts(self.cfg)
-                    current = next((a for a in accounts if a.get("is_current")), None)
-                    if current:
-                        self.last_good = str(current["id"])
-                    self._set("ok", "当前账号可用")
-                    return self.state()
-                if not auth["ineligible"]:
-                    message = auth["message"] or "当前账号需要重新登录"
-                    self._set("needs_signin", message)
-                    return self.state()
-
-            accounts = list_accounts(self.cfg)
-            current = next((a for a in accounts if a.get("is_current")), None)
-            candidates = [a for a in accounts if not a.get("is_current")]
-            if self.last_good:
-                candidates.sort(key=lambda a: 0 if str(a.get("id")) == self.last_good else 1)
-            else:
-                candidates.sort(key=lambda a: (int(a.get("last_used_at") or 0),
-                                               int(a.get("created_at") or 0)),
-                                reverse=True)
-            if not candidates:
-                self._set("no_candidates", "当前账号不可用，但没有其它可切换账号")
-                return self.state()
-
-            self.last_attempt = now()
-            from_name = str((current or {}).get("name") or "当前账号")
-            log.warning("当前账号不可用（%s），开始自动切换，候选 %d 个",
-                        auth["message"] or "需要验证", len(candidates))
-            self._set("switching", "当前账号不可用，正在尝试自动切换",
-                      **{"from": from_name})
-            last_error = ""
-            for candidate in candidates:
-                name = str(candidate.get("name") or candidate.get("id"))
-                try:
-                    self.switcher.switch(str(candidate["id"]))
-                except ApiError as exc:
-                    last_error = exc.message
-                    if exc.status == 409:
-                        self._set("busy", "有其它切换正在进行", **{"from": from_name})
-                        return self.state()
-                    log.warning("自动切换到「%s」失败：%s", name, exc.message)
-                    continue
-                except Exception as exc:  # noqa: BLE001
-                    last_error = exc.__class__.__name__
-                    log.warning("自动切换到「%s」异常：%s", name, last_error)
-                    continue
-
-                checked = self._wait_auth()
-                if checked and checked.get("signed_in"):
-                    self.last_good = str(candidate["id"])
-                    self.unknown_streak = 0
-                    log.warning("自动切换完成：%s -> %s", from_name, name)
-                    self._set("switched", "已自动切换到「%s」" % name,
-                              **{"from": from_name, "to": name})
-                    return self.state()
-                last_error = (checked or {}).get("message") or "账号不可用"
-                log.warning("自动切换后「%s」仍不可用：%s", name, last_error)
-
-            if current:
-                try:
-                    self.switcher.switch(str(current["id"]))
-                    log.warning("自动切换失败，已切回「%s」", from_name)
-                except Exception as exc:  # noqa: BLE001
-                    log.error("自动切换失败后未能切回「%s」：%s", from_name,
-                              exc.__class__.__name__)
-            self.unknown_streak = 0
-            self._set("failed", "自动切换失败：没有找到可用账号"
-                      + ("（%s）" % last_error if last_error else ""),
-                      **{"from": from_name})
+            try:
+                with self.switcher.operation_lock.hold("自动检查与恢复"):
+                    self._check_locked(force)
+            except ApiError as exc:
+                self._set("busy" if exc.status == 409 else "failed", exc.message)
             return self.state()
         finally:
             self._lock.release()
+
+    def _check_locked(self, force: bool) -> None:
+        self._set("checking", "正在检查当前账号")
+        auth = language_server_auth(self.cfg)
+        if auth is None:
+            self.unknown_streak += 1
+            if self.unknown_streak < 3:
+                self._set("unknown", "暂时无法读取 Antigravity 登录状态")
+            elif self.last_recovery and time.monotonic() - self.last_recovery < FAILOVER_COOLDOWN:
+                self._set("unknown", "登录状态仍不可读，等待服务恢复冷却")
+            elif self.cfg.get("auto_failover", True):
+                self._recover_service()
+            return
+
+        self.unknown_streak = 0
+        if not (auth["signed_in"] or auth["ineligible"]):
+            self._set("needs_signin", auth["message"] or "当前账号需要重新登录")
+            return
+        accounts = list_accounts(self.cfg)
+        current = next((a for a in accounts if a.get("is_current")), None)
+        if auth["signed_in"]:
+            if current:
+                self.last_good = str(current["id"])
+                self._remember_good(self.last_good)
+            self._set("ok", "当前账号可用")
+            return
+        if not force and self.last_attempt and time.monotonic() - self.last_attempt < FAILOVER_COOLDOWN:
+            self._set("cooldown", "当前账号不可用，等待自动切换冷却")
+            return
+
+        candidates = [a for a in accounts if not a.get("is_current") and a.get("has_token")]
+        candidates.sort(key=lambda a: a["id"] != self.last_good)
+        if not candidates:
+            self._set("no_candidates", "当前账号不可用，但没有其它可切换账号")
+            return
+
+        self.last_attempt = time.monotonic()
+        from_name = str((current or {}).get("name") or "当前账号")
+        last_error = ""
+        for candidate in candidates:
+            if not self.cfg.get("auto_failover", True):
+                self._set("disabled", "自动切换已关闭")
+                return
+            account_id, name = str(candidate["id"]), str(candidate["name"])
+            self._set("switching", "正在验证备用账号「%s」" % name, **{"from": from_name})
+            try:
+                self.switcher.switch_locked(account_id)
+            except ApiError as exc:
+                last_error = exc.message
+                log.warning("自动切换到「%s」失败：%s", name, last_error)
+                if exc.status == 422 and exc.extra.get("rolled_back"):
+                    continue  # 仅在明确被拒绝且回滚成功时继续试下一账号。
+                self._set("failed" if exc.extra.get("rolled_back") is False or exc.status != 504
+                          else "unknown", last_error, **{"from": from_name})
+                return
+            self.last_good = account_id
+            self._remember_good(account_id)
+            self._set("switched", "已自动切换到「%s」" % name, **{"from": from_name, "to": name})
+            return
+        self._set("failed", "没有找到可用账号：%s" % last_error, **{"from": from_name})
 
 
 def failover_loop(manager: FailoverManager) -> None:
@@ -1742,23 +1831,22 @@ def failover_loop(manager: FailoverManager) -> None:
 # Antigravity 核心更新
 # ---------------------------------------------------------------------------
 
-def running_language_server_version() -> str:
-    """从正在运行的 language_server 命令行读取版本。"""
+def running_language_server_version(cfg: Dict[str, Any]) -> str:
+    """只读取受管服务内的 language_server，忽略其他会话的实例。"""
     try:
         entries = os.listdir("/proc")
     except OSError:
         return ""
     for name in entries:
-        if not name.isdigit():
+        if not name.isdigit() or not managed_service_process(cfg, int(name)):
             continue
         try:
             with open("/proc/%s/cmdline" % name, "rb") as handle:
-                raw = handle.read().decode("utf-8", "replace")
+                parts = handle.read().decode("utf-8", "replace").rstrip("\0").split("\0")
         except OSError:
             continue
-        if "--standalone" not in raw or "--override_ide_version" not in raw:
+        if "--standalone" not in parts:
             continue
-        parts = [part for part in raw.split("\0") if part]
         for index, part in enumerate(parts):
             if part == "--override_ide_version" and index + 1 < len(parts):
                 return parts[index + 1]
@@ -1767,14 +1855,17 @@ def running_language_server_version() -> str:
     return ""
 
 
+def updater_home() -> str:
+    return expand_path(os.environ.get("AGY_HOME") or "~/.agy-remote")
+
+
 def staged_language_server_version() -> str:
-    base = expand_path(os.environ.get("AGY_HOME") or "~/.agy-remote")
-    data = read_json(os.path.join(base, "updater-state.json"))
+    data = read_json(os.path.join(updater_home(), "updater-state.json"))
     return str(data.get("staged_version") or "")
 
 
-def update_status() -> Dict[str, Any]:
-    running = running_language_server_version()
+def update_status(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    running = running_language_server_version(cfg)
     staged = staged_language_server_version()
     latest = staged or running
     return {
@@ -1791,11 +1882,10 @@ def agy_server_binary() -> str:
 
 
 def _update_output(proc: subprocess.CompletedProcess) -> str:
-    text = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-    return text[-1200:]
+    return re.sub(r"\x1b\[[0-9;]*m", "", (proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
 
 
-def check_official_update() -> Dict[str, Any]:
+def check_official_update(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """调用 agy-server update -check 查询官方最新版本。"""
     try:
         proc = subprocess.run([agy_server_binary(), "update", "-check"],
@@ -1803,34 +1893,32 @@ def check_official_update() -> Dict[str, Any]:
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ApiError(502, "检查更新失败：%s" % exc.__class__.__name__)
     output = _update_output(proc)
-    latest = ""
-    installed = ""
-    for line in output.splitlines():
-        match = re.search(r"Latest version\s*:\s*([0-9][^\s]*)", line)
-        if match:
-            latest = match.group(1)
-        match = re.search(r"Installed version\s*:\s*([0-9][^\s]*)", line)
-        if match:
-            installed = match.group(1)
-    if proc.returncode != 0 or not latest:
+    version = re.search(r"Latest version\s*:\s*([0-9]\S*)", output)
+    if proc.returncode != 0 or not version:
         raise ApiError(502, "检查更新失败：%s" % (output[-300:] or "无输出"))
-    running = running_language_server_version() or installed
+    latest = version.group(1)
+    running = running_language_server_version(cfg)
     return {
         "running": running,
         "latest": latest,
         "staged": staged_language_server_version(),
-        "available": bool(latest and latest != running),
-        "output": output,
+        "available": bool(running and latest != running),
+        "output": output[-1200:],
     }
 
 
-def apply_language_server_update(cfg: Dict[str, Any], lock: threading.Lock) -> Dict[str, Any]:
+def apply_language_server_update(cfg: Dict[str, Any],
+                                 operation_lock: ServiceOperationLock) -> Dict[str, Any]:
     """更新官方 language_server，并重启 agy-server 让新版本生效。"""
-    if not lock.acquire(blocking=False):
-        raise ApiError(409, "更新正在进行，请稍候")
-    try:
-        before = update_status()
+    with operation_lock.hold("系统更新"):
+        before = update_status(cfg)
+        if not before["running"]:
+            raise ApiError(503, "无法确认受管语言服务器的当前版本，未执行更新。")
         try:
+            for directory in (os.path.dirname(cfg["language_server_path"]), updater_home()):
+                if not os.access(directory, os.W_OK | os.X_OK):
+                    raise ApiError(503, "面板无法写入更新目录 %s。请由管理员在主机上执行更新。"
+                                   % directory)
             proc = subprocess.run([agy_server_binary(), "update", "-yes"],
                                   capture_output=True, text=True, timeout=300)
         except (OSError, subprocess.TimeoutExpired) as exc:
@@ -1838,6 +1926,12 @@ def apply_language_server_update(cfg: Dict[str, Any], lock: threading.Lock) -> D
         output = _update_output(proc)
         if proc.returncode != 0:
             raise ApiError(502, "更新失败：%s" % (output[-400:] or "无输出"))
+        match = re.search(r"Latest version\s*:\s*([0-9]\S*)", output)
+        expected = match.group(1) if match else staged_language_server_version()
+        if not expected:
+            raise ApiError(502, "更新程序未报告目标版本；未重启服务。")
+        if before["running"] == expected:
+            return dict(update_status(cfg), message="当前已是目标版本，未重启", output=output[-1200:])
 
         log.warning("开始重启 agy-server 应用 Antigravity 更新")
         try:
@@ -1849,24 +1943,28 @@ def apply_language_server_update(cfg: Dict[str, Any], lock: threading.Lock) -> D
                            "更新已下载，但重启失败：%s" % exc.message,
                            {"detail": exc.detail} if exc.detail else None)
 
-        after = update_status()
-        log.warning("Antigravity 更新完成：%s -> %s", before.get("running"),
-                    after.get("running"))
-        return {
-            "running": after.get("running") or "",
-            "latest": after.get("latest") or "",
-            "staged": after.get("staged") or "",
-            "available": bool(after.get("available")),
-            "message": "已更新并重启" if after.get("running") else "已重启",
-            "output": output,
-        }
-    finally:
-        lock.release()
+        # The web probe can respond before the managed language server is launched.
+        deadline = time.monotonic() + max(3, cfg["probe_timeout"])
+        while True:
+            after = update_status(cfg)
+            if after["running"] == expected:
+                log.warning("Antigravity 更新已验证：%s -> %s", before["running"], expected)
+                return dict(after, message="已更新并重启", output=output[-1200:])
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(1)
+        raise ApiError(502, "重启后未确认目标版本 %s；实际运行版本：%s。"
+                       % (expected, after["running"] or "未知"), {"running": after["running"]})
 
 
 # ---------------------------------------------------------------------------
 # 本地 Token 用量（读取 Antigravity 会话数据库）
 # ---------------------------------------------------------------------------
+
+MAX_GENERATION_BYTES = 64 * 1024 * 1024
+PERFORMANCE_MAX_AGE = 7 * 24 * 60 * 60
+PERFORMANCE_SAMPLE_LIMIT = 10
+MAX_PROTO_TIMESTAMP = 253402300799  # 9999-12-31T23:59:59Z
 
 def _pb_varint(data: bytes, pos: int) -> Tuple[Optional[int], int]:
     value = 0
@@ -1914,9 +2012,61 @@ def _pb_bytes(data: bytes, number: int) -> Optional[bytes]:
 
 def _pb_uint(data: bytes, number: int) -> Optional[int]:
     for key, wire, value in _pb_fields(data):
-        if key == number and wire == 0:
+        if key == number and wire == 0 and value is not None:
             return int(value)
     return None
+
+
+def _pb_text(data: bytes, number: int) -> str:
+    try:
+        return (_pb_bytes(data, number) or b"").decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return ""
+
+
+def _pb_duration(message: Optional[bytes]) -> float:
+    if not message:
+        return 0.0
+    seconds = _pb_uint(message, 1) or 0
+    nanos = _pb_uint(message, 2) or 0
+    if seconds >= 2**63 or nanos >= 1_000_000_000:
+        return 0.0
+    return seconds + nanos / 1_000_000_000
+
+
+def _completed_text_step(payload: bytes) -> bool:
+    response = _pb_bytes(payload, 20)
+    return bool(response and _pb_uint(response, 12) == 2  # STOP_PATTERN
+                and _pb_bytes(response, 7) is None  # No tool calls.
+                and _pb_text(response, 1))
+
+
+def _performance_sample(blob: bytes, stamp: int, source: str) -> Optional[Dict[str, Any]]:
+    wrapped = _pb_bytes(blob, 1) or b""
+    usage = _pb_bytes(wrapped, 4) or b""
+    body_tokens = _pb_uint(usage, 10) or 0  # Excludes thinking tokens (field 9).
+    latency = _pb_duration(_pb_bytes(wrapped, 11))
+    streaming = _pb_duration(_pb_bytes(wrapped, 12))
+    model = _pb_text(wrapped, 21) or _pb_text(wrapped, 19)
+    if not model or body_tokens < 100 or latency <= 0 or streaming < 1:
+        return None
+    return {"model": model, "source": source, "timestamp": stamp,
+            "first_text_seconds": latency, "body_tokens_per_second": body_tokens / streaming}
+
+
+def _recent_performance(samples: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not samples:
+        return None
+    ordered = sorted(samples, key=lambda row: (-row["timestamp"], row["source"], row["model"]))
+    recent = ordered[:PERFORMANCE_SAMPLE_LIMIT]
+    return {
+        "sample_count": len(recent),
+        "model_count": len({row["model"] for row in recent}),
+        "source_count": len({row["source"] for row in recent}),
+        "first_text_seconds": statistics.median(row["first_text_seconds"] for row in recent),
+        "body_tokens_per_second": statistics.median(row["body_tokens_per_second"] for row in recent),
+        "last_activity": recent[0]["timestamp"],
+    }
 
 
 def _usage_event(blob: bytes, step_timestamp: Optional[int]) -> Optional[Dict[str, Any]]:
@@ -1942,7 +2092,7 @@ def _usage_event(blob: bytes, step_timestamp: Optional[int]) -> Optional[Dict[st
         if clock:
             timestamp = _pb_uint(clock, 1)
     timestamp = timestamp or step_timestamp
-    if not timestamp or timestamp <= 0:
+    if not timestamp or not 0 < timestamp <= MAX_PROTO_TIMESTAMP:
         return None
     return {
         "model": model or "未知模型",
@@ -1989,56 +2139,82 @@ class UsageStats:
                     found.append(path)
         return found
 
-    def _read_database(self, path: str) -> Tuple[List[Dict[str, Any]], int, bool]:
+    def _read_database(self, path: str, scan_time: int) -> Tuple[
+            List[Dict[str, Any]], List[Dict[str, Any]], int, int, bool]:
         events: List[Dict[str, Any]] = []
+        samples: List[Dict[str, Any]] = []
         scanned = 0
+        skipped = 0
+        source = os.path.basename(os.path.dirname(os.path.dirname(path)))
         try:
             uri = "file:%s?mode=ro" % urllib.parse.quote(path)
             conn = sqlite3.connect(uri, uri=True, timeout=2)
             try:
-                step_timestamps: List[Optional[int]] = []
+                # Keep both reads in one snapshot while another process writes to the DB.
+                conn.execute("BEGIN")
+                steps: List[Tuple[Optional[int], bool]] = []
                 try:
-                    for (metadata,) in conn.execute(
-                            "SELECT metadata FROM steps WHERE step_type = 15 ORDER BY idx"):
-                        value = None
-                        if isinstance(metadata, (bytes, bytearray)):
-                            stamp = _pb_bytes(bytes(metadata), 1)
-                            if stamp:
-                                value = _pb_uint(stamp, 1)
-                        step_timestamps.append(value)
+                    columns = {row[1] for row in conn.execute("PRAGMA table_info(steps)")}
+                    payload_column = ("CASE WHEN status = 3 AND length(step_payload) <= 1048576 "
+                                      "THEN step_payload END"
+                                      if {"status", "step_payload"} <= columns else "NULL")
+                    for metadata, payload in conn.execute(
+                            "SELECT CASE WHEN length(metadata) <= 65536 THEN metadata END, "
+                            + payload_column + " FROM steps WHERE step_type = 15 ORDER BY idx"):
+                        clock = _pb_bytes(metadata, 1) if isinstance(metadata, bytes) else None
+                        stamp = _pb_uint(clock, 1) if clock else None
+                        in_window = (stamp is not None
+                                     and scan_time - PERFORMANCE_MAX_AGE <= stamp <= scan_time)
+                        complete = in_window and isinstance(payload, bytes) and _completed_text_step(payload)
+                        steps.append((stamp, complete))
                 except sqlite3.Error:
                     pass
-                rows = conn.execute(
-                    "SELECT data, length(data) FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx"
-                ).fetchall()
+                # gen_metadata.idx and steps.idx are independent. Only pair timings
+                # with steps if the ordered generation sequences have matching lengths.
+                count = conn.execute("SELECT count(*) FROM gen_metadata WHERE data IS NOT NULL").fetchone()[0]
+                aligned = count == len(steps)
+                rows = conn.execute("SELECT CASE WHEN length(data) <= ? THEN data END, length(data) "
+                                    "FROM gen_metadata WHERE data IS NOT NULL ORDER BY idx",
+                                    (MAX_GENERATION_BYTES,))
                 for ordinal, (blob, size) in enumerate(rows):
                     scanned += 1
-                    if not isinstance(blob, (bytes, bytearray)) or (size or 0) > 64 * 1024 * 1024:
+                    if size > MAX_GENERATION_BYTES:
+                        skipped += 1
+                    if not isinstance(blob, bytes):
                         continue
-                    stamp = step_timestamps[ordinal] if ordinal < len(step_timestamps) else None
-                    event = _usage_event(bytes(blob), stamp)
+                    stamp, complete = steps[ordinal] if ordinal < len(steps) else (None, False)
+                    if aligned and complete and stamp is not None:
+                        sample = _performance_sample(blob, stamp, source)
+                        if sample:
+                            samples.append(sample)
+                    event = _usage_event(blob, stamp)
                     if event:
                         events.append(event)
             finally:
                 conn.close()
-            return events, scanned, True
+            return events, samples, scanned, skipped, True
         except (sqlite3.Error, OSError):
-            return events, scanned, False
+            return events, [], scanned, skipped, False
 
     def _build(self) -> Dict[str, Any]:
         now = dt.datetime.now()
         today = now.date()
         start_30 = today - dt.timedelta(days=29)
         events: List[Dict[str, Any]] = []
+        performance_samples: List[Dict[str, Any]] = []
         databases = self._databases()
+        scan_time = int(now.timestamp())
         generations = 0
+        skipped_large = 0
         unreadable = 0
         for path in databases:
-            found, scanned, ok = self._read_database(path)
+            found, samples, scanned, skipped, ok = self._read_database(path, scan_time)
             generations += scanned
+            skipped_large += skipped
             if not ok:
                 unreadable += 1
             events.extend(found)
+            performance_samples.extend(samples)
 
         ranges = {
             "today": today,
@@ -2053,7 +2229,10 @@ class UsageStats:
         by_model: Dict[str, Dict[str, Dict[str, int]]] = {name: {} for name in ranges}
 
         for event in events:
-            moment = dt.datetime.fromtimestamp(event["timestamp"])
+            try:
+                moment = dt.datetime.fromtimestamp(event["timestamp"])
+            except (OverflowError, OSError, ValueError):
+                continue
             day = moment.date()
             if day < start_30 or day > today:
                 continue
@@ -2088,7 +2267,7 @@ class UsageStats:
         last_activity = max((event["timestamp"] for event in events), default=0) or None
 
         return {
-            "recent_performance": None,
+            "recent_performance": _recent_performance(performance_samples),
             "today": totals["today"],
             "yesterday": totals["yesterday"],
             "last_3_days": totals["last_3_days"],
@@ -2103,7 +2282,7 @@ class UsageStats:
             "by_model": model_list("last_30_days"),
             "databases_scanned": len(databases),
             "generations_scanned": generations,
-            "skipped_large_records": 0,
+            "skipped_large_records": skipped_large,
             "unreadable_databases": unreadable,
             "last_activity": last_activity,
             "generated_at": int(time.time()),
@@ -2282,7 +2461,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/update":
                 self._require_auth()
-                self._json(200, dict(update_status(), ok=True))
+                self._json(200, dict(update_status(self.app.cfg), ok=True))
                 return
             if path == "/api/usage":
                 self._require_auth()
@@ -2348,10 +2527,9 @@ class PanelHandler(BaseHTTPRequestHandler):
                 body = self._read_body()
                 action = str(body.get("action") or "apply")
                 if action == "check":
-                    result = check_official_update()
+                    result = check_official_update(self.app.cfg)
                 elif action == "apply":
-                    result = apply_language_server_update(self.app.cfg,
-                                                          self.app.update_lock)
+                    result = apply_language_server_update(self.app.cfg, self.app.operation_lock)
                 else:
                     raise ApiError(400, "action 必须是 check 或 apply")
                 self._json(200, dict(result, ok=True))
@@ -2371,7 +2549,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/accounts":
                 body = self._read_body()
-                result = save_account(self.app.cfg, body.get("name", ""))
+                with self.app.operation_lock.hold("保存账号快照"):
+                    result = save_account(self.app.cfg, body.get("name", ""))
                 self._json(200, {"ok": True, "account": result})
                 return
             if path == "/api/status":
@@ -2388,11 +2567,13 @@ class PanelHandler(BaseHTTPRequestHandler):
                     return
                 if action == "rename":
                     body = self._read_body()
-                    result = rename_account(self.app.cfg, account_id, body.get("name", ""))
+                    with self.app.operation_lock.hold("重命名账号快照"):
+                        result = rename_account(self.app.cfg, account_id, body.get("name", ""))
                     self._json(200, {"ok": True, "account": result})
                     return
                 if action == "delete":
-                    delete_account(self.app.cfg, account_id)
+                    with self.app.operation_lock.hold("删除账号快照"):
+                        delete_account(self.app.cfg, account_id)
                     self._json(200, {"ok": True})
                     return
             raise ApiError(404, "接口不存在")
@@ -2409,7 +2590,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             path = urllib.parse.urlparse(self.path).path.rstrip("/")
             parts = [part for part in path.split("/") if part]
             if len(parts) == 3 and parts[0] == "api" and parts[1] == "accounts":
-                delete_account(self.app.cfg, urllib.parse.unquote(parts[2]))
+                with self.app.operation_lock.hold("删除账号快照"):
+                    delete_account(self.app.cfg, urllib.parse.unquote(parts[2]))
                 self._json(200, {"ok": True})
                 return
             raise ApiError(404, "接口不存在")
@@ -2478,11 +2660,11 @@ class App:
         self.cfg = cfg
         self.secret = load_secret(cfg)
         self.limiter = LoginLimiter(int(cfg["login_max_failures"]), int(cfg["login_window"]))
-        self.switcher = Switcher(cfg)
+        self.operation_lock = ServiceOperationLock()
+        self.switcher = Switcher(cfg, self.operation_lock)
         self.quota = QuotaManager(cfg, self.switcher)
         self.usage = UsageStats(cfg)
         self.failover = FailoverManager(cfg, self.switcher)
-        self.update_lock = threading.Lock()
 
     def status_payload(self) -> Dict[str, Any]:
         accounts = list_accounts(self.cfg)

@@ -66,8 +66,8 @@ export default function FailoverSettings() {
                 <div className="min-w-0 flex-1">
                     <h3 className="text-base font-semibold text-gray-900 dark:text-gray-100">账号失效自动切换</h3>
                     <p className="mt-0.5 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                        当 Google 明确判定当前账号不可用或需要验证时，自动尝试其它已保存账号。只有验证成功的账号才会被保留；
-                        都不行时会切回原账号并冷却 30 分钟。切换会重启 agy-server 几秒。
+                        当 Google 明确判定当前账号不可用或需要验证时，自动尝试其它已保存账号；验证失败会回滚。
+                        如果只是连续无法读取登录状态，则仅尝试重启服务，不换账号。
                     </p>
                 </div>
             </div>

@@ -22,6 +22,21 @@ jobs:
       - name: 冒烟测试
         run: python -m unittest discover -s tests -v
 
+  webapp:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: webapp-src
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium --only-shell
+      - run: npx playwright test
+
   shellcheck:
     runs-on: ubuntu-22.04
     steps:

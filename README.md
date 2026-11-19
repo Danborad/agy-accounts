@@ -83,10 +83,11 @@ Antigravity 在机器上的状态分三层：
 - 隐私模式：一键把邮箱与备注打码为 `***@域名`，状态保存在浏览器本地
 - 账号状态与综合额度汇总卡片
 - 本地 Token 用量监控：今日 / 昨日 / 3 / 7 / 30 天、24 小时趋势、按模型统计
+- 首页 1–3 张卡片单排，4 张及以上均分两排，每排铺满；首字延迟与正文速度只读统计近 7 天最近 10 条有效回复的中位数，不发送额外模型请求，没有样本时显示「—」
 - 保存当前登录为命名快照（右下角工具栏，自动识别邮箱）
-- 一键切换：停止 → 替换 → 启动 → 探测，全程串行
-- 当前账号被 Google 判定不可用 / 需要验证时，自动尝试其它已保存账号（默认开启，可在设置页关闭）
-- Antigravity 更新提醒：顶部导航与设置页均可检查更新、更新并重启
+- 一键切换：停止 → 替换 → 启动 → 验证登录。失败或不能确认时回滚；切换、自动恢复和更新重启共用操作锁
+- 当前账号被 Google 判定不可用 / 需要验证时，自动尝试其它已保存账号（默认开启，可在设置页关闭）；连续三次读取登录状态失败时，仅尝试重启服务，不换账号
+- Antigravity 更新提醒：可检查官方版本；只有更新目录可写且重启后确认目标版本时，才报告更新成功。部署使用默认只读沙箱时，请由管理员在主机上更新
 - 失败自动回滚：任何一步出错都恢复原令牌并尽量拉起服务
 - 重命名 / 编辑备注（只改显示名，目录 ID 不变）
 - 删除快照（不触碰线上令牌与业务数据）
@@ -212,7 +213,7 @@ python3 agy_accounts.py serve
 |---|---|---|
 | `token_path` | `~/.gemini/jetski-standalone-oauth-token` | `agy-server` 的 OAuth 令牌文件 |
 | `accounts_dir` | `~/.local/share/agy-accounts/accounts` | 快照根目录（等同凭据库） |
-| `service_name` | `agy-server` | 受控 systemd 单元名，仅用于生成默认命令 |
+| `service_name` | `agy-server` | 受控 systemd 单元名，用于启停和识别所属语言服务器进程 |
 | `stop_command` | `[]` | 留空则用 `systemctl stop <service_name>` |
 | `start_command` | `[]` | 留空则用 `systemctl start <service_name>` |
 | `status_command` | `[]` | 留空则用 `systemctl is-active --quiet <service_name>` |
@@ -226,7 +227,7 @@ python3 agy_accounts.py serve
 | `cookie_secure` | `false` | 走 HTTPS 反代时设为 `true` |
 | `probe_timeout` | `30` | 等待服务就绪的最长秒数 |
 | `command_timeout` | `30` | 单条启停命令超时 |
-| `language_server_path` | `/opt/agy-server/language_server` | 用于提取安装型 OAuth 客户端公开凭据，仅额度刷新时使用 |
+| `language_server_path` | `/opt/agy-server/language_server` | 用于额度查询和检查面板是否有权限下载更新；应与 `agy-server` 的实际路径一致 |
 | `quota_ttl` | `300` | 额度缓存秒数 |
 | `quota_timeout` | `12` | 额度接口单次请求超时秒数 |
 | `stop_timeout` | `20` | 等待进程退出的最长秒数 |
@@ -365,7 +366,8 @@ python3 agy_accounts.py --version
 | 面板起不来，日志提示未配置密码 | `python3 agy_accounts.py hash-password` 后写入 `password_hash` |
 | `check` 提示令牌目录不存在 | 先完成一次 `agy-server` 网页登录；或修正 `token_path` |
 | 切换报「命令执行失败」 | 面板用户无权控制服务；用 root 或配置 sudoers |
-| 切换报「服务在 30s 内未就绪」 | 看 `journalctl -u agy-server -n 100`；确认 `probe_url` 正确；面板已自动回滚 |
+| 切换报「服务在 30s 内未就绪」 | 看 `journalctl -u agy-server -n 100`；确认 `probe_url` 正确；以错误消息中的回滚结果为准 |
+| 切换提示「回滚未完成」 | 不要继续切换。检查服务和令牌目录权限；如果提示原凭据备份路径，管理员可在停止服务后用该文件恢复原令牌（权限 `0600`），再启动服务。确认恢复后删除备份，不要分享备份内容 |
 | 切换时提示 409 | 已有切换在进行，等待完成 |
 | 页面一直停留在登录 | 检查浏览器是否禁用 Cookie；确认访问地址与面板一致 |
 | 切换后自动跳转失败 | 配置 `app_url` 为实际可访问的 Antigravity 地址 |
@@ -405,6 +407,16 @@ journalctl -u agy-accounts -f
 
 ```bash
 python3 -m unittest discover -s tests -v
+```
+
+首页布局和 Web 桥接的浏览器测试（Node.js 22）：
+
+```bash
+cd webapp-src
+npm ci
+npm run build
+npx playwright install chromium --only-shell
+npx playwright test
 ```
 
 当前覆盖：

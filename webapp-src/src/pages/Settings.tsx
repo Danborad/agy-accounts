@@ -11,7 +11,6 @@ import FailoverSettings from '../components/settings/FailoverSettings';
 import PasswordSettings from '../components/settings/PasswordSettings';
 import UpdateSettings from '../components/settings/UpdateSettings';
 import ModelDisplaySettings from '../components/settings/ModelDisplaySettings';
-import NetworkSettings from '../components/settings/NetworkSettings';
 import SettingsNavigation, { SETTINGS_SECTIONS, SettingsSection } from '../components/settings/SettingsNavigation';
 import '../components/settings/SettingsLayout.css';
 
@@ -105,7 +104,10 @@ function Settings() {
         general: (
             <div className="grid gap-6 xl:grid-cols-2 xl:items-start">
                 <div className="min-w-0 space-y-6">
-                <NetworkSettings />
+                <section className="rounded-2xl border border-gray-200/80 bg-white p-5 dark:border-slate-800 dark:bg-slate-900/80">
+                    <h3 className="text-base font-semibold">{t('network.title')}</h3>
+                    <p className="mt-1 text-xs leading-relaxed text-gray-500 dark:text-gray-400">{t('network.web_unavailable')}</p>
+                </section>
                 {/* 1. 界面外观与语言 */}
                 <section className="rounded-2xl border border-gray-200/80 bg-white p-5 sm:p-6 shadow-xs dark:border-slate-800 dark:bg-slate-900/80">
                     <div className="mb-5 flex items-start gap-3">

@@ -11,10 +11,12 @@ import http.client
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -118,6 +120,10 @@ class PanelTest(unittest.TestCase):
 
         self.loaded = agy_accounts.load_config(self.config_path)
         self.app = agy_accounts.App(self.loaded)
+        verify = mock.patch.object(agy_accounts, "wait_language_server_auth", return_value={
+            "signed_in": True, "ineligible": False, "message": ""})
+        self.verify_auth = verify.start()
+        self.addCleanup(verify.stop)
         self.server = agy_accounts.PanelServer(("127.0.0.1", 0), self.app)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -358,6 +364,47 @@ class PanelTest(unittest.TestCase):
         with open(self.token_path, encoding="utf-8") as fh:
             self.assertIn('"bbb"', fh.read())
 
+    def test_cannot_confirm_stopped_leaves_live_token_unchanged(self):
+        self.login()
+        self.write_token('{"access_token":"candidate"}')
+        self.assertEqual(self.save("candidate")[0], 200)
+        candidate = self.account_id("candidate")
+        original = b'{"access_token":"unsaved"}'
+        self.write_token(original)
+
+        with mock.patch.object(agy_accounts, "service_active", return_value=None), \
+                mock.patch.object(agy_accounts.time, "monotonic", side_effect=[0, 0, 10]), \
+                mock.patch.object(agy_accounts.time, "sleep"):
+            with self.assertRaises(agy_accounts.ApiError) as caught:
+                self.app.switcher.switch(candidate)
+        self.assertEqual(caught.exception.status, 504)
+        self.assertTrue(caught.exception.extra["unchanged"])
+        self.assertEqual(agy_accounts.read_bytes(self.token_path), original)
+
+    def test_manual_verification_timeout_rolls_back_unsaved_original(self):
+        self.login()
+        self.write_token('{"access_token":"candidate"}')
+        self.assertEqual(self.save("candidate")[0], 200)
+        original = b'{"access_token":"unsaved"}'
+        self.write_token(original)
+        self.verify_auth.return_value = None
+        status, data, _ = self.switch(self.account_id("candidate"))
+        self.assertEqual(status, 504, data)
+        self.assertEqual(agy_accounts.read_bytes(self.token_path), original)
+        self.assertTrue(data["rolled_back"])
+        self.assertFalse(self.app.switcher.state()["active"])
+        self.assertEqual(os.listdir(os.path.join(self.config_home, "switch-recovery")), [])
+
+    def test_metadata_write_failure_does_not_invalidate_verified_switch(self):
+        self.login()
+        self.write_token('{"access_token":"candidate"}')
+        self.assertEqual(self.save("candidate")[0], 200)
+        self.write_token('{"access_token":"unsaved"}')
+        with mock.patch.object(agy_accounts, "touch_account", side_effect=PermissionError):
+            status, data, _ = self.switch(self.account_id("candidate"))
+        self.assertEqual(status, 200, data)
+        self.assertEqual(agy_accounts.read_bytes(self.token_path), b'{"access_token":"candidate"}')
+
     def test_rename_and_delete(self):
         self.login()
         self.write_token('{"access_token":"aaa"}')
@@ -517,47 +564,82 @@ class PanelTest(unittest.TestCase):
         self.assertTrue(data["enabled"])
 
     def test_failover_switches_when_account_ineligible(self):
-        manager = agy_accounts.FailoverManager(self.loaded, self.app.switcher)
-        accounts = [
-            {"id": "current", "name": "主账号", "is_current": True,
-             "last_used_at": 300, "created_at": 1},
-            {"id": "backup", "name": "备用账号", "is_current": False,
-             "last_used_at": 200, "created_at": 2},
-        ]
-        answers = [
-            {"signed_in": False, "ineligible": True, "message": "需要验证", "checked_at": 0},
-            {"signed_in": True, "ineligible": False, "message": "", "checked_at": 0},
-        ]
-        with mock.patch.object(agy_accounts, "language_server_auth", side_effect=answers), \
-                mock.patch.object(agy_accounts, "list_accounts", return_value=accounts), \
-                mock.patch.object(self.app.switcher, "switch", return_value={}) as switch:
-            state = manager.check(force=True)
-        switch.assert_called_once_with("backup")
+        self.write_token('{"access_token":"backup"}')
+        agy_accounts.save_account(self.loaded, "备用账号")
+        self.write_token('{"access_token":"current"}')
+        agy_accounts.save_account(self.loaded, "主账号")
+        with mock.patch.object(agy_accounts, "language_server_auth", return_value={
+            "signed_in": False, "ineligible": True, "message": "需要验证",
+        }):
+            state = self.app.failover.check(force=True)
         self.assertEqual(state["state"], "switched")
         self.assertEqual(state["to"], "备用账号")
+        self.assertEqual(agy_accounts.read_bytes(self.token_path), b'{"access_token":"backup"}')
+        self.assertEqual(agy_accounts.load_config(self.config_path)["auto_failover_last_good"], "备用账号")
+
+    def test_failover_timeout_rolls_back_and_blocks_conflicting_requests(self):
+        self.login()
+        self.write_token('{"access_token":"first"}')
+        first = agy_accounts.save_account(self.loaded, "first")["id"]
+        self.write_token('{"access_token":"second"}')
+        agy_accounts.save_account(self.loaded, "second")
+        original = b'{"access_token":"unsaved"}'
+        self.write_token(original)
+
+        def verify(_cfg):
+            self.assertEqual(self.switch(first)[0], 409)
+            self.assertEqual(self.request("POST", "/api/update", {"action": "apply"})[0], 409)
+            return None
+
+        self.verify_auth.side_effect = verify
+        starts = self.start_count()
+        with mock.patch.object(agy_accounts, "language_server_auth", return_value={
+            "signed_in": False, "ineligible": True, "message": "需要验证",
+        }):
+            state = self.app.failover.check(force=True)
+        self.assertEqual(state["state"], "unknown")
+        self.assertIn("已回滚", state["message"])
+        self.verify_auth.assert_called_once()
+        self.assertEqual(agy_accounts.read_bytes(self.token_path), original)
+        self.assertEqual(self.start_count() - starts, 2)
+        with self.app.operation_lock.hold("再次操作"):
+            pass
+
+    def test_failed_rollback_does_not_claim_original_was_restored(self):
+        self.write_token('{"access_token":"candidate"}')
+        agy_accounts.save_account(self.loaded, "candidate")
+        self.write_token('{"access_token":"original"}')
+        self.verify_auth.return_value = None
+        with mock.patch.object(agy_accounts, "language_server_auth", return_value={
+                    "signed_in": False, "ineligible": True, "message": "需要验证",
+                }), mock.patch.object(self.app.switcher, "_rollback", return_value=False):
+            state = self.app.failover.check(force=True)
+        self.assertEqual(state["state"], "failed")
+        self.assertIn("回滚未完成", state["message"])
+        directory = os.path.join(self.config_home, "switch-recovery")
+        backup, = os.listdir(directory)
+        path = os.path.join(directory, backup)
+        self.assertEqual(agy_accounts.read_bytes(path), b'{"access_token":"original"}')
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
 
     def test_failover_recovers_after_unknown_auth_streak(self):
-        manager = agy_accounts.FailoverManager(self.loaded, self.app.switcher)
-        accounts = [
-            {"id": "current", "name": "主账号", "is_current": True,
-             "last_used_at": 300, "created_at": 1},
-            {"id": "backup", "name": "备用账号", "is_current": False,
-             "last_used_at": 200, "created_at": 2},
-        ]
-        answers = [
-            None, None, None,
-            {"signed_in": True, "ineligible": False, "message": "", "checked_at": 0},
-        ]
-        with mock.patch.object(agy_accounts, "language_server_auth", side_effect=answers), \
-                mock.patch.object(agy_accounts, "list_accounts", return_value=accounts), \
-                mock.patch.object(self.app.switcher, "switch", return_value={}) as switch:
-            manager.check(force=True)
-            manager.check(force=True)
-            state = manager.check(force=True)
-        switch.assert_called_once_with("backup")
-        self.assertEqual(state["state"], "switched")
-        self.assertEqual(manager.unknown_streak, 0)
+        manager = self.app.failover
+        original = b'{"access_token":"unsaved"}'
+        self.write_token(original)
+        starts = self.start_count()
+        with mock.patch.object(agy_accounts, "language_server_auth", return_value=None):
+            self.assertEqual(manager.check(force=True)["state"], "unknown")
+            self.assertEqual(manager.check(force=True)["state"], "unknown")
+            with self.app.operation_lock.hold("系统更新"):
+                self.assertEqual(manager.check(force=True)["state"], "busy")
+            self.assertEqual(manager.check(force=True)["state"], "recovered")
+            self.assertEqual(manager.unknown_streak, 0)
+            for _ in range(3):
+                self.assertEqual(manager.check(force=True)["state"], "unknown")
+        self.verify_auth.assert_not_called()
+        self.assertEqual(self.start_count(), starts + 1)
+        self.assertEqual(agy_accounts.read_bytes(self.token_path), original)
 
     def test_failover_disabled_does_not_check(self):
         self.loaded["auto_failover"] = False
@@ -578,6 +660,143 @@ class PanelTest(unittest.TestCase):
 
         status, data, _ = self.request("POST", "/api/update", {"action": "unknown"})
         self.assertEqual(status, 400)
+
+    def test_update_rejects_read_only_sandbox_before_downloading(self):
+        self.login()
+        with mock.patch.object(agy_accounts, "running_language_server_version", return_value="2.30.0"), \
+                mock.patch.object(agy_accounts.os, "access", return_value=False), \
+                mock.patch.object(agy_accounts.subprocess, "run") as command:
+            status, data, _ = self.request("POST", "/api/update", {"action": "apply"})
+        self.assertEqual(status, 503, data)
+        self.assertIn("无法写入", data["error"])
+        command.assert_not_called()
+        with self.app.operation_lock.hold("再次操作"):
+            pass
+
+    def test_update_must_reach_expected_version(self):
+        self.login()
+        for actual, expected_status in [("2.30.0", 502), ("", 502), ("2.31.0", 200)]:
+            with self.subTest(actual=actual), \
+                    mock.patch.object(agy_accounts, "running_language_server_version",
+                                      side_effect=["2.30.0", actual]), \
+                    mock.patch.object(agy_accounts.os, "access", return_value=True), \
+                    mock.patch.object(agy_accounts.subprocess, "run") as command, \
+                    mock.patch.object(agy_accounts, "stop_service") as stop, \
+                    mock.patch.object(agy_accounts, "start_service") as start, \
+                    mock.patch.object(agy_accounts.time, "monotonic", side_effect=[0, 10]):
+                command.return_value = mock.Mock(returncode=0, stderr="", stdout=(
+                    "Latest version : \x1b[32m2.31.0\x1b[0m for linux-x64\n" + ("progress\n" * 250)))
+                status, data, _ = self.request("POST", "/api/update", {"action": "apply"})
+                self.assertEqual(status, expected_status, data)
+                self.assertEqual(data["running"], actual)
+                stop.assert_called_once()
+                start.assert_called_once()
+
+    def test_failed_config_write_leaves_runtime_password_and_failover_unchanged(self):
+        self.login()
+        old_hash = self.loaded["password_hash"]
+        with mock.patch.object(agy_accounts, "write_json_atomic", side_effect=PermissionError):
+            self.assertEqual(self.request("POST", "/api/failover", {"enabled": False})[0], 500)
+            with self.assertRaises(agy_accounts.ApiError):
+                agy_accounts.change_password(self.loaded, "test-password", "new-password")
+        self.assertTrue(self.loaded["auto_failover"])
+        self.assertEqual(self.loaded["password_hash"], old_hash)
+        self.assertEqual(agy_accounts.read_json(self.config_path)["password_hash"], old_hash)
+
+
+class UsagePerformanceTest(unittest.TestCase):
+    @staticmethod
+    def varint(value):
+        encoded = bytearray()
+        while value >= 128:
+            encoded.append((value & 127) | 128)
+            value >>= 7
+        encoded.append(value)
+        return bytes(encoded)
+
+    def field(self, number, value):
+        if isinstance(value, int):
+            return self.varint(number << 3) + self.varint(value)
+        return self.varint((number << 3) | 2) + self.varint(len(value)) + value
+
+    def generation(self, tokens, latency=4, duration=2, nanos=250_000_000):
+        f = self.field
+        usage = f(2, 300) + f(3, tokens + 600) + f(9, 600) + f(10, tokens)
+        return f(1, f(4, usage) + f(11, f(1, latency) + f(2, nanos))
+                 + f(12, f(1, duration)) + f(19, b"test-model"))
+
+    def fixture(self, directory, rows, extra_generation=False, legacy=False):
+        path = os.path.join(directory, "conversation.db")
+        f = self.field
+        with sqlite3.connect(path) as conn:
+            columns = "" if legacy else ", status INTEGER, step_payload BLOB"
+            conn.execute("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, metadata BLOB"
+                         + columns + ")")
+            conn.execute("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+            for i, (stamp, status, stop_reason, tool_call, blob) in enumerate(rows):
+                metadata = f(1, f(1, stamp)) if stamp else None
+                response = f(1, b"synthetic reply") + f(12, stop_reason)
+                if tool_call:
+                    response += f(7, b"")
+                if legacy:
+                    conn.execute("INSERT INTO steps VALUES (?, 15, ?)", (50 + i, metadata))
+                else:
+                    conn.execute("INSERT INTO steps VALUES (?, 15, ?, ?, ?)",
+                                 (50 + i, metadata, status, f(20, response)))
+                conn.execute("INSERT INTO gen_metadata VALUES (?, ?)", (i, blob))
+            if extra_generation:
+                conn.execute("INSERT INTO gen_metadata VALUES (1000, ?)", (self.generation(100),))
+        conn.close()
+        return path
+
+    def test_recent_performance_uses_completed_text_and_median(self):
+        now = int(time.time())
+        rows = [
+            (now, 3, 2, False, self.generation(200)),
+            (now - 1, 3, 2, False, self.generation(400, latency=6)),
+            (now - 2, 3, 2, True, self.generation(900)),
+            (now - 3, 1, 2, False, self.generation(900)),
+            (now - 4, 3, 1, False, self.generation(900)),
+            (now - 5, 3, 2, False, self.generation(99)),
+            (now - 6, 3, 2, False, self.generation(300, duration=0)),
+            (now - 7, 3, 2, False, self.generation(300, nanos=1_000_000_000)),
+            (now - 8, 3, 2, False, self.generation(300, latency=2**64 - 1)),
+            (now - 9, 3, 2, False, b"\x0a\x01\x20"),
+            (now - 700_000, 3, 2, False, self.generation(900)),
+            (now + 60, 3, 2, False, self.generation(900)),
+            (None, 3, 2, False, self.generation(900)),
+        ]
+        stats = agy_accounts.UsageStats({})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.fixture(tmp, rows)
+            with mock.patch.object(stats, "_databases", return_value=[path]):
+                data = stats.get()
+        performance = data["recent_performance"]
+        self.assertEqual(data["unreadable_databases"], 0)
+        self.assertEqual(performance["sample_count"], 2)
+        self.assertEqual(performance["first_text_seconds"], 5.25)
+        self.assertEqual(performance["body_tokens_per_second"], 150)
+
+    def test_recent_performance_limits_samples(self):
+        now = int(time.time())
+        rows = [(now - i, 3, 2, False, self.generation(200 + i * 10)) for i in range(12)]
+        stats = agy_accounts.UsageStats({})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.fixture(tmp, rows)
+            with mock.patch.object(stats, "_databases", return_value=[path]):
+                performance = stats.get()["recent_performance"]
+        self.assertEqual(performance["sample_count"], 10)
+        self.assertEqual(performance["body_tokens_per_second"], 122.5)
+
+    def test_missing_steps_do_not_invent_performance_or_discard_token_totals(self):
+        for options in ({"extra_generation": True}, {"legacy": True}):
+            with self.subTest(options=options), tempfile.TemporaryDirectory() as tmp:
+                stats = agy_accounts.UsageStats({})
+                path = self.fixture(tmp, [(int(time.time()), 3, 2, False, self.generation(200))], **options)
+                with mock.patch.object(stats, "_databases", return_value=[path]):
+                    data = stats.get()
+                self.assertIsNone(data["recent_performance"])
+                self.assertEqual(data["last_7_days"]["output_tokens"], 800)
 
 
 if __name__ == "__main__":

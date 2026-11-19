@@ -545,6 +545,7 @@
     "cli_description": "Desktop and agy-switch CLI share the same switch. For CLI-only use, enable translation, then keep agy-switch experiments run active."
   },
   "network": {
+    "web_unavailable": "This web panel cannot change server-side proxies. Set proxy environment variables for the affected agy-accounts or agy-server service on the host.",
     "title": "Network proxy",
     "description": "Selections apply automatically to new requests. Follows system HTTP/SOCKS proxies and proxy environment variables by default, and rereads changes while running. Linux supports GNOME and KDE fixed proxies. Use a manual address for PAC scripts.",
     "mode": "Proxy mode",

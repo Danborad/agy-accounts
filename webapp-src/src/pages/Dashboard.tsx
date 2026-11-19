@@ -5,7 +5,7 @@ import { request as invoke } from '../utils/request';
 import { showToast } from '../components/common/ToastContainer';
 import { estimateApiCost, findModelPricing } from '../utils/modelPricing';
 import { useConfigStore } from '../stores/useConfigStore';
-import { dashboardCards, dashboardGridClass, DEFAULT_MENU_BAR_PREFERENCES, type DashboardCardId } from '../types/config';
+import { dashboardCardRows, dashboardCards, DEFAULT_MENU_BAR_PREFERENCES, type DashboardCardId } from '../types/config';
 import { dashboardOverview } from '../utils/dashboardOverview';
 import { averageRequestInput } from '../utils/dashboardUsage';
 import { quotaDisplay, quotaTone } from '../utils/menuBarOverview';
@@ -285,10 +285,10 @@ function TokenCard({
     children?: ReactNode;
 }) {
     return (
-        <div data-dashboard-card={cardId} title={detail === null ? hint : undefined} className="relative min-w-0 rounded-2xl border border-gray-100 bg-white p-3 shadow-sm transition-all hover:border-gray-200 hover:shadow-md dark:border-base-200 dark:bg-base-100">
+        <div data-dashboard-card={cardId} title={detail === null ? hint : undefined} className="relative min-w-0 rounded-2xl border border-gray-100 bg-white p-1.5 shadow-sm transition-all [overflow-wrap:anywhere] hover:border-gray-200 hover:shadow-md sm:p-3 dark:border-base-200 dark:bg-base-100">
             <div className="mb-2 flex items-center justify-between">
                 <div className="flex min-w-0 items-center gap-1.5 text-xs font-medium leading-4 text-gray-600 dark:text-gray-300">
-                    <span className={`shrink-0 rounded-lg p-1.5 ${color}`}>
+                    <span className={`hidden shrink-0 rounded-lg p-1.5 sm:inline-block ${color}`}>
                         <Icon className="h-3.5 w-3.5" />
                     </span>
                     {label}
@@ -296,7 +296,7 @@ function TokenCard({
             </div>
             {children ?? <div className="break-words text-xl font-bold tracking-tight text-gray-900 dark:text-base-content" title={`${displayValue || formatTokens(value, locale)}${unit ? ` ${unit}` : ''}`}>
                 {displayValue || compactTokens(value, locale)}
-                {unit && <> <span className="inline-block text-sm font-medium text-gray-500 dark:text-gray-400">{unit}</span></>}
+                {unit && <> <span className="text-sm font-medium text-gray-500 dark:text-gray-400">{unit}</span></>}
             </div>}
             {detail !== null && <div
                 data-card-detail
@@ -709,8 +709,12 @@ function Dashboard() {
                     </div>
                 )}
 
-                {visibleCards.length > 0 && <div className={`grid auto-rows-fr shrink-0 gap-2 ${dashboardGridClass(visibleCards.length)}`} data-dashboard-cards>
-                    {visibleCards.map(id => <Fragment key={id}>{cards[id]}</Fragment>)}
+                {visibleCards.length > 0 && <div className="grid auto-rows-fr shrink-0 gap-2" data-dashboard-cards>
+                    {dashboardCardRows(visibleCards).map((row, index) => (
+                        <div key={index} className="grid min-w-0 gap-2" style={{ gridTemplateColumns: `repeat(${row.length}, minmax(0, 1fr))` }}>
+                            {row.map(id => <Fragment key={id}>{cards[id]}</Fragment>)}
+                        </div>
+                    ))}
                 </div>}
 
                 <div className="grid shrink-0 gap-2 lg:h-[176px] lg:grid-cols-[1.35fr_1fr]">

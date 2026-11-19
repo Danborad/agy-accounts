@@ -20,13 +20,11 @@ export function dashboardCardOrder(cards: unknown, order?: unknown): DashboardCa
     const saved = normalized.length ? normalized : dashboardCards(cards);
     return [...saved, ...DASHBOARD_CARD_IDS.filter(id => !HIDDEN_DASHBOARD_CARDS.has(id) && !saved.includes(id))];
 }
-export function dashboardGridClass(count: number): string {
-    return [
-        '', 'grid-cols-1', 'grid-cols-2', 'grid-cols-2 sm:grid-cols-3',
-        'grid-cols-2 lg:grid-cols-4', 'grid-cols-2 lg:grid-cols-5',
-        'grid-cols-2 md:grid-cols-3 lg:grid-cols-5', 'grid-cols-2 md:grid-cols-3 lg:grid-cols-5',
-        'grid-cols-2 md:grid-cols-3 lg:grid-cols-5', 'grid-cols-2 md:grid-cols-3 lg:grid-cols-5', 'grid-cols-2 md:grid-cols-3 lg:grid-cols-5',
-    ][count] || 'grid-cols-2';
+export function dashboardCardRows<T>(cards: readonly T[]): T[][] {
+    if (cards.length === 0) return [];
+    if (cards.length < 4) return [cards.slice()];
+    const split = Math.ceil(cards.length / 2);
+    return [cards.slice(0, split), cards.slice(split)];
 }
 export type MenuBarResetTimeDisplay = 'hidden' | 'hover' | 'always';
 export interface MenuBarPreferences {

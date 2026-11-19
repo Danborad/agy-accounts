@@ -30,9 +30,13 @@ export default function UpdateSettings() {
         try {
             const result = await request<UpdateInfo>('check_update');
             setInfo(result);
-            showToast(result.available
-                ? `发现 Antigravity ${result.latest}`
-                : 'Antigravity 已是最新版本', 'success');
+            if (!result.running) {
+                showToast('未能读取受管服务的运行版本，无法判断是否需要更新', 'error');
+            } else {
+                showToast(result.available
+                    ? `发现 Antigravity ${result.latest}`
+                    : 'Antigravity 已是最新版本', 'success');
+            }
         } catch (error) {
             showToast(`检查更新失败：${error instanceof Error ? error.message : String(error)}`, 'error');
         } finally {
@@ -76,13 +80,13 @@ export default function UpdateSettings() {
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200/80 bg-gray-50/60 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/40">
                 <div className="min-w-0 text-sm">
                     <p className="text-gray-700 dark:text-gray-200">
-                        当前版本：<span className="font-medium">{info?.running || '读取中…'}</span>
+                        当前版本：<span className="font-medium">{info?.running || (info ? '无法确认' : '读取中…')}</span>
                         {info?.latest && info.latest !== info.running
                             ? <span className="ml-2 text-amber-600 dark:text-amber-400">最新 {info.latest}</span>
                             : null}
                     </p>
                     <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-                        {info?.available ? '发现可用更新，可立即应用。' : '暂未发现待应用的更新。'}
+                        {info?.available ? '发现可用更新。' : info?.running ? '暂未发现待应用的更新。' : '未确认运行版本。'}
                     </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">

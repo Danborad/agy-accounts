@@ -655,14 +655,16 @@
       case "cancel_auto_switch":
         return autoSwitchStatus();
       case "get_app_experiments":
-        return {};
+        return { available: false, translation_enabled: false, translated: 0, state: "unavailable" };
       case "list_oauth_clients":
         return { clients: [] };
       case "get_active_oauth_client":
         return { client_key: "" };
       case "set_active_oauth_client":
       case "set_window_theme":
+        return null;
       case "set_app_translation":
+        throw new Error("网页端不支持修改客户端汉化；请使用独立的网页汉化入口。");
       case "set_dashboard_cards": {
         var cards = Array.isArray(args.cards) ? args.cards : [];
         var order = Array.isArray(args.order) ? args.order : cards;

@@ -8,6 +8,7 @@
 # Node / vendored frontend build
 node_modules/
 webapp-src/dist/
+webapp-src/test-results/
 
 # Python
 __pycache__/
