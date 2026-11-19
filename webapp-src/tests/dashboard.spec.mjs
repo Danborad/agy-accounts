@@ -84,3 +84,31 @@ test('性能指标有值，主题和汉化命令不写卡片设置', async ({ pa
     expect(responses).toEqual({ theme: null, translationFailed: true });
     expect(preferenceWrites()).toBe(0);
 });
+
+for (const width of [390, 1920]) {
+    test(`设置页与首页、账号页宽度一致（${width}px）`, async ({ page }) => {
+        await page.setViewportSize({ width, height: 900 });
+        await openDashboard(page, 6);
+        const pageContainer = page.locator('main .max-w-7xl').first();
+        await expect(pageContainer).toBeVisible();
+        const dashboard = await pageContainer.boundingBox();
+
+        await page.goto(new URL('/accounts', pageUrl).href);
+        await expect(pageContainer).toBeVisible();
+        const accounts = await pageContainer.boundingBox();
+
+        await page.goto(new URL('/settings', pageUrl).href);
+        const settings = page.locator('.settings-layout');
+        await expect(settings.getByRole('tablist')).toBeVisible();
+        const frame = await settings.boundingBox();
+        for (const reference of [dashboard, accounts]) {
+            expect(frame.x).toBeCloseTo(reference.x);
+            expect(frame.width).toBeCloseTo(reference.width);
+        }
+
+        const sidebar = await settings.locator('aside').boundingBox();
+        const content = await settings.locator('.settings-content').boundingBox();
+        expect(sidebar.x).toBeGreaterThan(frame.x);
+        expect(content.x + content.width).toBeLessThan(frame.x + frame.width);
+    });
+}

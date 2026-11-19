@@ -379,7 +379,7 @@ function Settings() {
     };
 
     return (
-        <div ref={layout} className="settings-layout">
+        <div ref={layout} className="settings-layout mx-auto w-full max-w-7xl px-3 lg:px-4">
             <aside className="settings-sidebar">
                 <h1 className="settings-sidebar-title text-gray-900 dark:text-gray-100">{t('local_settings.title')}</h1>
                 <SettingsNavigation selected={section} onSelect={setSection} />
