@@ -10,6 +10,12 @@ const MAX_BODY = 64 * 1024;
 const RESTRICTED = { multiAccount: false, autoSwitchAccount: false, proxyEnabled: false, fileContextMenu: false };
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
 const ACCOUNT_ID = /^[\w.\-\u4e00-\u9fff]{1,64}$/u;
+const STAGE_PROMPT = 'Use the user language.';
+const STAGE_PROMPT_ZH = 'Use the user language. If the user writes in Chinese, write every visible progress update, plan item, and task description in Simplified Chinese. Keep code, commands, file paths, and proper nouns unchanged.';
+
+export function localizeStagePrompt(source) {
+  return typeof source === 'string' ? source.replace(STAGE_PROMPT, STAGE_PROMPT_ZH) : source;
+}
 
 export function webSettings(settings) {
   return { ...settings, ...RESTRICTED };
@@ -80,6 +86,7 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
       source = source.replace(`location.origin===${JSON.stringify(sentinel)}`, 'Boolean(globalThis.__agyPowertoolsWeb)');
       source = source.replace(/^globalThis\.__agyInitialSettings=.*;$/m,
         `globalThis.__agyInitialSettings=${JSON.stringify(webSettings(plugin.store.get()))};`);
+      source = localizeStagePrompt(source);
       const slot = "tab==='quota'?h(Quotas)";
       if (!source.includes(slot) || !source.includes("['quota',opts.multiAccount?")
           || !source.includes('        h(About),')) throw Error('插件账号页结构不兼容，停止注入');

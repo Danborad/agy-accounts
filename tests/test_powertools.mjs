@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { test } from 'node:test';
-import { createBridge, validateSettings, webSettings } from '../powertools/server.mjs';
+import { createBridge, validateSettings, webSettings, localizeStagePrompt } from '../powertools/server.mjs';
 import { createAccountClient } from '../powertools/account-client.mjs';
 
 const secret = 'f'.repeat(64);
@@ -32,6 +32,14 @@ test('网页版强制关闭桌面切号与代理，设置保存前拦截', () =>
     assert.throws(() => validateSettings({ proxyUrl: 'http://internal-service' }));
     assert.throws(() => validateSettings(null));
     assert.doesNotThrow(() => validateSettings({ compact: false }));
+});
+
+test('阶段汇报提示词补充中文计划要求', () => {
+    const source = 'const stageUpdateRule="During this task... Use the user language. Never invent progress.";';
+    const localized = localizeStagePrompt(source);
+    assert.match(localized, /Simplified Chinese/);
+    assert.match(localized, /plan item/);
+    assert.equal(localizeStagePrompt('no prompt here'), 'no prompt here');
 });
 
 test('账号客户端仅访问本机专用接口，不向浏览器提供凭据', async () => {

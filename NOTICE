@@ -40,6 +40,10 @@ antigravity-cn-community/Antigravity-Chinese-Localization
 toggle. It is loaded by the Nginx injection proxy and does not modify the
 Antigravity installation or app.asar.
 
+Modifications: the wrapper adds the URL/localStorage toggle, and model-generated
+markdown content under [data-markdown-root] is excluded from translation to
+avoid mixed-language output.
+
   https://github.com/antigravity-cn-community/Antigravity-Chinese-Localization
   Copyright (c) 2026 aabbWei
   Copyright (c) 2026 antigravity-cn-community contributors

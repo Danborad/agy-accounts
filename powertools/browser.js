@@ -66,9 +66,11 @@
     [data-testid="agy-page-tabs"]>button{flex-shrink:0}
     .agy-server-button{cursor:pointer;padding:7px 12px;border:1px solid var(--border);border-radius:8px}
     .agy-server-button:disabled{opacity:.5;cursor:default}
-    .agy-server-confirm{position:fixed;inset:0;background:#0009;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px}
-    .agy-server-confirm>.pt-card{max-width:480px;background:var(--card);padding:20px}
-    .agy-server-confirm .agy-field{width:100%;margin-top:8px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--background);color:var(--foreground)}
+    .agy-server-confirm{position:fixed;inset:0;background:#0009;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto}
+    .agy-server-confirm>.pt-card{width:min(480px,100%);max-height:calc(100vh - 32px);overflow:auto;box-sizing:border-box;background:var(--card);padding:20px}
+    .agy-server-modal-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:12px}
+    .agy-server-confirm .agy-server-modal-actions .agy-server-button{width:auto!important;flex:0 1 auto}
+    .agy-server-confirm input.agy-field{width:100%;margin-top:8px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--background);color:var(--foreground)}
   `;
   document.head.append(accountStyle);
   const updateControls = () => {

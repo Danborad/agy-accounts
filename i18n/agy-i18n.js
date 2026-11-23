@@ -11,6 +11,8 @@
  *
  * 本文件仅作为 agy-accounts 的 Nginx 注入层使用，不修改 Antigravity
  * 安装目录或 app.asar。上游完整许可见 NOTICE。
+ *
+ * 本地修改：跳过 [data-markdown-root] 内的模型正文，避免逐词汉化造成中英混杂。
  */
 (function () {
   "use strict";
@@ -7135,6 +7137,12 @@
     // 2. 绝对不能翻译的脚本/样式/按键标签
     const skipTags = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'KBD', 'SAMP', 'VAR'];
     if (skipTags.includes(element.tagName)) {
+      skipCache.set(element, true);
+      return true;
+    }
+
+    // 模型生成的正文、计划与阶段汇报保持原样，避免逐词翻译造成中英混杂。
+    if (element.closest && element.closest('[data-markdown-root]')) {
       skipCache.set(element, true);
       return true;
     }

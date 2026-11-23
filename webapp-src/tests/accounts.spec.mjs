@@ -3,8 +3,10 @@ import { buildSync } from 'esbuild';
 import { expect, test } from '@playwright/test';
 
 const script = readFileSync(new URL('../../powertools/accounts.js', import.meta.url), 'utf8');
+const browserScript = readFileSync(new URL('../../powertools/browser.js', import.meta.url), 'utf8');
+const accountCss = browserScript.match(/accountStyle\.textContent = `([\s\S]*?)`;/)?.[1] || '';
 const react = buildSync({
-    stdin: { contents: "import React from 'react';import{createRoot}from'react-dom/client';window.React=React;window.mountAccounts=()=>createRoot(document.getElementById('root')).render(React.createElement(window.__agyWebAccountsPanel));", resolveDir: process.cwd() },
+    stdin: { contents: "import React from 'react';import*as ReactDOM from'react-dom';import{createRoot}from'react-dom/client';window.React=React;window.ReactDOM=ReactDOM;window.mountAccounts=()=>createRoot(document.getElementById('root')).render(React.createElement(window.__agyWebAccountsPanel));", resolveDir: process.cwd() },
     bundle: true, write: false, format: 'iife',
 }).outputFiles[0].text;
 
@@ -13,6 +15,7 @@ async function openAccounts(page) {
         contentType: 'text/html', body: '<div id="root"></div>',
     }));
     await page.goto('http://localhost:4173/accounts-test');
+    await page.addStyleTag({ content: accountCss });
     await page.evaluate(() => {
         window.testState = {
             accounts: [
@@ -69,13 +72,22 @@ for (const width of [390, 1440]) {
 
         await page.getByTestId('agy-server-privacy').click();
         await expect(first.locator('.agy-server-email')).toHaveText('***@example.com');
-        await expect(first.locator('.agy-server-alias')).toHaveText('***');
+        await expect(first.locator('.agy-server-alias')).toHaveText('主账号');
         await page.getByTestId('agy-server-privacy').click();
         await expect(first.locator('.agy-server-email')).toHaveText('a@example.com');
         await expect(first.locator('.agy-server-alias')).toHaveText('主账号');
 
         await page.locator('[data-server-account="c"]').getByTestId('agy-server-alias-add').click();
-        await expect(page.getByRole('dialog', { name: '编辑账号备注' })).toBeVisible();
+        const aliasDialog = page.getByRole('dialog', { name: '编辑账号备注' });
+        await expect(aliasDialog).toBeVisible();
+        const modalCard = aliasDialog.locator('.pt-card');
+        const modalBox = await modalCard.boundingBox();
+        const viewport = page.viewportSize();
+        expect(Math.abs(modalBox.x + modalBox.width / 2 - viewport.width / 2)).toBeLessThan(3);
+        expect(Math.abs(modalBox.y + modalBox.height / 2 - viewport.height / 2)).toBeLessThan(3);
+        const actionTops = await aliasDialog.locator('.agy-server-modal-actions .agy-server-button')
+            .evaluateAll(nodes => nodes.map(node => Math.round(node.getBoundingClientRect().top)));
+        expect(new Set(actionTops).size).toBe(1);
         await page.getByTestId('agy-server-alias-input').fill('新备注');
         await page.getByTestId('agy-server-alias-save').click();
         await expect(page.locator('[data-server-account="c"] .agy-server-alias')).toHaveText('新备注');
