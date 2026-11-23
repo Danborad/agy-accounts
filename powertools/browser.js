@@ -2,7 +2,7 @@
 (() => {
   if (window !== window.top || window.__agyPowertoolsWeb) return;
   const endpoint = '/__agy-powertools/';
-  const assetVersion = '2';
+  const assetVersion = '3';
   window.__agyPowertoolsWeb = { transport: 'same-origin' };
   window.__agyPowertoolsWeb.rpc = async (method, payload = {}) => {
     const response = await fetch(`${endpoint}rpc`, {
@@ -67,8 +67,10 @@
     [data-testid="agy-page-tabs"]>button{flex-shrink:0}
     .agy-server-button{cursor:pointer;padding:7px 12px;border:1px solid var(--border);border-radius:8px}
     .agy-server-button:disabled{opacity:.5;cursor:default}
-    .agy-server-confirm{position:fixed;inset:0;background:#0009;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto}
-    .agy-server-confirm>.pt-card{width:min(480px,100%);max-height:calc(100vh - 32px);overflow:auto;box-sizing:border-box;background:var(--card);padding:20px}
+    dialog.agy-server-confirm{position:fixed!important;inset:0!important;margin:0!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;border:0;padding:16px;box-sizing:border-box;background:transparent;color:var(--foreground,#eee);overflow:auto;transform:none!important}
+    dialog.agy-server-confirm[open]{display:flex!important;align-items:center!important;justify-content:center!important}
+    dialog.agy-server-confirm::backdrop{background:#0009}
+    dialog.agy-server-confirm>.pt-card{width:min(480px,100%);max-height:calc(100dvh - 32px);margin:0!important;overflow:auto;box-sizing:border-box;background:var(--card,#16161a);padding:20px}
     .agy-server-modal-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:12px}
     .agy-server-confirm .agy-server-modal-actions .agy-server-button{width:auto!important;flex:0 1 auto}
     .agy-server-confirm input.agy-field{width:100%;margin-top:8px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--background);color:var(--foreground)}

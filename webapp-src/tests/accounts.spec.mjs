@@ -80,6 +80,7 @@ for (const width of [390, 1440]) {
         await page.locator('[data-server-account="c"]').getByTestId('agy-server-alias-add').click();
         const aliasDialog = page.getByRole('dialog', { name: '编辑账号备注' });
         await expect(aliasDialog).toBeVisible();
+        expect(await aliasDialog.evaluate(element => element.matches(':modal'))).toBe(true);
         const modalCard = aliasDialog.locator('.pt-card');
         const modalBox = await modalCard.boundingBox();
         const viewport = page.viewportSize();
@@ -102,6 +103,10 @@ for (const width of [390, 1440]) {
 
         await page.getByTestId('agy-server-switch').first().click();
         await expect(page.getByRole('dialog')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+        expect(await page.evaluate(() => window.switchCalls.length)).toBe(0);
+        await page.getByTestId('agy-server-switch').first().click();
         expect(await page.evaluate(() => window.switchCalls.length)).toBe(0);
         await page.getByRole('button', { name: '取消', exact: true }).click();
         expect(await page.evaluate(() => window.switchCalls.length)).toBe(0);
@@ -113,5 +118,33 @@ for (const width of [390, 1440]) {
         ]);
         expect(await page.evaluate(() => sessionStorage.getItem('agy-web-account-switch-job'))).toBeNull();
         await expect(page.getByTestId('agy-server-current')).toHaveText('当前账号');
+    });
+}
+
+for (const mode of ['transformed-container', 'no-portal', 'zoomed-root']) {
+    test(`备注弹窗在滚动和页面变换下仍居中（${mode}）`, async ({ page }) => {
+        await page.setViewportSize({ width: 1440, height: 900 });
+        await openAccounts(page);
+        await page.evaluate(mode => {
+            const root = document.getElementById('root');
+            root.style.cssText = 'height:500px;width:900px;overflow:auto;transform:translateX(60px);margin:100px;';
+            const spacer = document.createElement('div');
+            spacer.style.height = '1000px';
+            root.append(spacer);
+            if (mode === 'no-portal') window.ReactDOM = {};
+            if (mode === 'transformed-container') document.body.style.transform = 'translateX(40px)';
+            if (mode === 'zoomed-root') document.documentElement.style.zoom = '1.5';
+        }, mode);
+        await page.locator('[data-server-account="a"]').getByTestId('agy-server-alias-edit').click();
+        const dialog = page.getByRole('dialog', { name: '编辑账号备注' });
+        await expect(dialog).toBeVisible();
+        expect(await dialog.evaluate(element => element.matches(':modal'))).toBe(true);
+        const box = await dialog.locator('.pt-card').boundingBox();
+        expect(Math.abs(box.x + box.width / 2 - 720)).toBeLessThan(3);
+        expect(Math.abs(box.y + box.height / 2 - 450)).toBeLessThan(3);
+        await page.evaluate(() => { document.getElementById('root').scrollTop = 600; });
+        const afterScroll = await dialog.locator('.pt-card').boundingBox();
+        expect(Math.abs(afterScroll.x - box.x)).toBeLessThan(3);
+        expect(Math.abs(afterScroll.y - box.y)).toBeLessThan(3);
     });
 }

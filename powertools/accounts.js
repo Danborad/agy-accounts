@@ -2,6 +2,22 @@
 (() => {
   const key = 'agy-web-account-switch-job';
   const privacyKey = 'agy-web-account-privacy';
+
+  function AccountModal({ label, children, onClose, busy }) {
+    const R = window.React;
+    const dialog = R.useRef(null);
+    R.useLayoutEffect(() => {
+      const element = dialog.current;
+      // Native top layer is independent of transformed/clipped page ancestors.
+      element.showModal();
+      return () => element.close();
+    }, []);
+    return R.createElement('dialog', {
+      ref: dialog, 'aria-label': label, 'aria-modal': 'true', className: 'agy-server-confirm',
+      onCancel: event => { event.preventDefault(); if (!busy) onClose(); },
+    }, R.createElement('div', { className: 'pt-card' }, children));
+  }
+
   window.__agyWebAccountsPanel = function AccountsPanel() {
     const R = window.React;
     const h = R.createElement;
@@ -95,11 +111,6 @@
     const button = (text, onClick, disabled, props = {}) => h('button', {
       type: 'button', className: 'agy-field agy-server-button', onClick, disabled, ...props,
     }, text);
-    const modal = (label, children) => {
-      const node = h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': label, className: 'agy-server-confirm' },
-        h('div', { className: 'pt-card' }, ...children));
-      return window.ReactDOM?.createPortal ? window.ReactDOM.createPortal(node, document.body) : node;
-    };
     const eyeIcon = off => h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none',
       stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
       h('path', { d: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z' }),
@@ -167,7 +178,7 @@
         account.quota?.fetched_at && h('p', { className: 'pt-muted', style: { fontSize: 11, marginTop: 10 } },
           `${data.refreshing ? '正在更新；缓存时间' : '更新时间'}：${new Date(account.quota.fetched_at * 1000).toLocaleString()}`),
         account.quota?.error && h('p', { className: 'pt-muted' }, `当前为缓存额度：${account.quota.error}`)))),
-      target && modal('确认切换账号', [
+      target && h(AccountModal, { label: '确认切换账号', onClose: () => setTarget(null), busy },
         h('h3', null, `切换到「${maskEmail(target.email || target.name)}」？`),
         hasAlias(target) && h('p', { className: 'pt-muted' }, `备注：${target.name}`),
         h('p', null, '切换会重启 Antigravity，正在生成的回复可能中断。请确认当前任务已结束；失败时会尝试恢复原凭据。'),
@@ -175,8 +186,8 @@
           button('取消', () => setTarget(null), busy),
           button(busy ? '提交中…' : '确认切换', requestSwitch, busy || Boolean(jobId),
             { 'data-testid': 'agy-server-switch-confirm' })),
-      ]),
-      aliasTarget && modal('编辑账号备注', [
+      ),
+      aliasTarget && h(AccountModal, { label: '编辑账号备注', onClose: () => setAliasTarget(null), busy: aliasBusy },
         h('h3', null, '编辑账号备注'),
         h('p', { className: 'pt-muted' }, maskEmail(aliasTarget.email || aliasTarget.name)),
         h('input', { type: 'text', maxLength: 60, value: aliasDraft, onChange: event => setAliasDraft(event.target.value),
@@ -189,6 +200,6 @@
           button(aliasBusy ? '保存中…' : '保存', () => saveAlias(aliasDraft),
             aliasBusy || !aliasDraft.trim() || aliasDraft.trim() === String(aliasTarget.name || ''),
             { 'data-testid': 'agy-server-alias-save' })),
-      ]));
+      ));
   };
 })();
