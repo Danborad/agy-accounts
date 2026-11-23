@@ -44,6 +44,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: 语法检查
+        run: node --check powertools/browser.js && node --check powertools/server.mjs
       - name: 桥接安全与 RPC 测试
         run: node --test tests/test_powertools.mjs
 

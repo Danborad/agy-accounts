@@ -113,6 +113,7 @@ Antigravity 在机器上的状态分三层：
 
 - 只读访问 `~/.gemini/antigravity`，设置写入 `~/.gemini/antigravity/plugin_data/agy-powertools-web`
 - 不提供切号、自动切号、代理、文件右键菜单和插件自更新；这些继续使用原账号面板或主机配置
+- 网页设置页会隐藏不可用的多账号、网络代理和文件右键菜单入口，并在顶部提供原账号面板链接
 - 费用是 API 参考估算，不是订阅账单
 - 桥接只监听 `127.0.0.1:8791`，由 Nginx 复用 8766 的登录会话；不开放浏览器调试端口
 - 需要 Node.js 22.13+；脚本会用 `NODE_BIN` 或 `/opt/node22/bin/node` 自动查找，找不到时只保留汉化

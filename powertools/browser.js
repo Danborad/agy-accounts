@@ -35,11 +35,26 @@
         control.title = '网页版暂不支持；账号切换请继续使用现有账号面板。';
       }
     }
+    const accountRow = document.querySelector('[data-testid="agy-setting-row-multiAccount"]');
+    if (accountRow) accountRow.style.display = 'none';
+    const fileRow = document.querySelector('[data-testid="agy-setting-row-fileContextMenu"]');
+    if (fileRow) fileRow.style.display = 'none';
+    for (const title of ['账号与切换', '网络代理']) {
+      const heading = [...document.querySelectorAll('h3')].find(node => node.textContent.trim() === title);
+      const section = heading?.closest('.space-y-2');
+      if (section) section.style.display = 'none';
+    }
     const page = document.querySelector('[data-testid="agy-page-tabs"]');
     if (page && !document.querySelector('[data-agy-web-notice]')) {
       const note = document.createElement('p');
       note.dataset.agyWebNotice = '';
-      note.textContent = '网页版测试：界面与统计已接入。切号仍使用原账号面板；费用仅为 API 参考估算，不是订阅账单。';
+      note.append('网页版测试：界面与统计已接入。切号请使用 ');
+      const link = document.createElement('a');
+      link.href = `${location.protocol}//${location.hostname}:8790/`;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = '原账号面板';
+      note.append(link, '；费用仅为 API 参考估算，不是订阅账单。');
       note.style.cssText = 'font-size:12px;line-height:1.6;opacity:.65;margin:12px 0';
       page.parentElement.after(note);
     }
