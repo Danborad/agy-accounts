@@ -38,7 +38,32 @@
   style.textContent = restricted.map(key => `[data-testid="agy-setting-row-${key}"] { opacity: .55; }`).join('\n');
   document.head.append(style);
   const accountStyle = document.createElement('style');
-  accountStyle.textContent = '.agy-server-quota{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px}[data-server-account]{padding:16px}[data-testid="agy-page-tabs"]{overflow-x:auto;max-width:100%;scrollbar-width:none;white-space:nowrap}[data-testid="agy-page-tabs"]>button{flex-shrink:0}.agy-server-bucket{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;padding:4px 0}.agy-server-button{cursor:pointer;padding:7px 12px;border:1px solid var(--border);border-radius:8px}.agy-server-button:disabled{opacity:.5;cursor:default}.agy-server-confirm{position:fixed;inset:0;background:#0009;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px}.agy-server-confirm>.pt-card{max-width:480px;background:var(--card);padding:20px}';
+  accountStyle.textContent = `
+    .agy-server-identity{min-width:0}
+    .agy-server-email{display:block;font-size:15px;line-height:1.4;overflow-wrap:anywhere}
+    .agy-server-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:5px}
+    .agy-server-alias,.agy-server-login,.agy-server-tier{font-size:11px;line-height:1.5;padding:1px 7px;border:1px solid var(--border,#333);border-radius:999px;color:var(--muted-foreground,#9ca3af)}
+    .agy-server-alias{color:var(--foreground,#eee);background:var(--secondary,#222)}
+    .agy-server-login.is-missing{color:var(--error,#ef4444);border-color:var(--error,#ef4444)}
+    .agy-server-current{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--primary,#2563eb);color:#fff;white-space:nowrap}
+    .agy-server-quota{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:14px}
+    .agy-server-quota-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12px;padding:3px 0}
+    .agy-server-quota-label{width:48px;flex:none;color:var(--muted-foreground,#9ca3af)}
+    .agy-server-bar{height:6px;border-radius:3px;background:var(--border,#333);overflow:hidden;flex:1 1 100px;min-width:80px}
+    .agy-server-fill{height:100%;border-radius:3px;transition:width .2s}
+    .agy-server-fill.high{background:#22c55e}
+    .agy-server-fill.mid{background:#f59e0b}
+    .agy-server-fill.low{background:#ef4444}
+    .agy-server-percent{width:42px;text-align:right;font-variant-numeric:tabular-nums}
+    .agy-server-reset{font-size:11px;margin-left:auto}
+    [data-server-account]{padding:16px}
+    [data-testid="agy-page-tabs"]{overflow-x:auto;max-width:100%;scrollbar-width:none;white-space:nowrap}
+    [data-testid="agy-page-tabs"]>button{flex-shrink:0}
+    .agy-server-button{cursor:pointer;padding:7px 12px;border:1px solid var(--border);border-radius:8px}
+    .agy-server-button:disabled{opacity:.5;cursor:default}
+    .agy-server-confirm{position:fixed;inset:0;background:#0009;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px}
+    .agy-server-confirm>.pt-card{max-width:480px;background:var(--card);padding:20px}
+  `;
   document.head.append(accountStyle);
   const updateControls = () => {
     for (const key of restricted) {

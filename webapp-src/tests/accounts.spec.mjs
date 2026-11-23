@@ -22,6 +22,7 @@ async function openAccounts(page) {
                 { id: 'b', name: '备用账号', email: 'b@example.com', has_token: true, quota: {
                     tier: 'Ultra', groups: [{ key: 'claude', label: 'Claude', windows: { weekly: { remaining: .5 } } }],
                 } },
+                { id: 'c', name: '待登录', email: 'c@example.com', has_token: false, quota: {} },
             ], currentId: 'a', switchJob: {},
         };
         window.switchCalls = [];
@@ -43,16 +44,25 @@ for (const width of [390, 1440]) {
     test(`内置账号仅显示额度与切换，确认后才提交（${width}px）`, async ({ page }) => {
         await page.setViewportSize({ width, height: 900 });
         await openAccounts(page);
-        await expect(page.locator('[data-server-account]')).toHaveCount(2);
+        await expect(page.locator('[data-server-account]')).toHaveCount(3);
         await expect(page.getByTestId('agy-server-current')).toHaveText('当前账号');
         await expect(page.getByTestId('agy-server-accounts')).toContainText('80%');
         await expect(page.getByTestId('agy-server-accounts')).toContainText('50%');
-        await page.getByTestId('agy-server-switch').click();
+        const first = page.locator('[data-server-account="a"]');
+        await expect(first.locator('.agy-server-email')).toHaveText('a@example.com');
+        await expect(first.locator('.agy-server-alias')).toHaveText('主账号');
+        await expect(first.locator('.agy-server-login')).toHaveText('已保存登录');
+        await expect(first.getByRole('progressbar').first()).toHaveAttribute('aria-valuenow', '80');
+        await expect(first.locator('.agy-server-fill')).toHaveAttribute('style', /width:\s*80%/);
+        const missing = page.locator('[data-server-account="c"]');
+        await expect(missing.locator('.agy-server-login')).toHaveText('缺少登录');
+        await expect(missing.getByTestId('agy-server-switch')).toBeDisabled();
+        await page.getByTestId('agy-server-switch').first().click();
         await expect(page.getByRole('dialog')).toBeVisible();
         expect(await page.evaluate(() => window.switchCalls.length)).toBe(0);
         await page.getByRole('button', { name: '取消', exact: true }).click();
         expect(await page.evaluate(() => window.switchCalls.length)).toBe(0);
-        await page.getByTestId('agy-server-switch').click();
+        await page.getByTestId('agy-server-switch').first().click();
         await page.getByTestId('agy-server-switch-confirm').click();
         await expect(page.getByRole('alert')).toHaveText('验证失败，已回滚原账号');
         expect(await page.evaluate(() => window.switchCalls)).toEqual([
