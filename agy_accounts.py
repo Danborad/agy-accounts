@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.10.0"
+VERSION = "1.10.1"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -1113,17 +1113,18 @@ class QuotaManager:
 
     def get_all(self, force: bool = False, cache_only: bool = False) -> Dict[str, Any]:
         # 串行刷新，避免同一令牌被并发刷新或重复打 Google 接口。
-        with self._fetch_lock:
+        # 读取缓存不等待远程刷新，保证内置账号页和切换状态查询及时返回。
+        if cache_only:
             quotas: Dict[str, Any] = {}
-            if cache_only:
-                for account in list_accounts(self.cfg):
-                    account_id = str(account["id"])
-                    path = account_dir(self.cfg, account_id)
-                    raw = read_bytes(account_token_path(path))
-                    if not raw:
-                        quotas[account_id] = {"status": "loading"}
-                        continue
-                    key = cache_key(raw)
+            for account in list_accounts(self.cfg):
+                account_id = str(account["id"])
+                path = account_dir(self.cfg, account_id)
+                raw = read_bytes(account_token_path(path))
+                if not raw:
+                    quotas[account_id] = {"status": "loading"}
+                    continue
+                key = cache_key(raw)
+                with self._lock:
                     entry = self._cached(account_id)
                     if entry and entry.get("key") == key and isinstance(entry.get("quota"), dict):
                         quota = dict(entry["quota"])
@@ -1132,7 +1133,9 @@ class QuotaManager:
                         quotas[account_id] = quota
                     else:
                         quotas[account_id] = {"status": "loading"}
-                return {"quotas": quotas, "fetched_at": now()}
+            return {"quotas": quotas, "fetched_at": now()}
+        with self._fetch_lock:
+            quotas = {}
             for account in list_accounts(self.cfg):
                 quotas[str(account["id"])] = self._fetch_one(account, force)
             return {"quotas": quotas, "fetched_at": now()}
@@ -2398,6 +2401,32 @@ class PanelHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             raise ApiError(401, "未登录或会话已过期")
 
+    def _powertools_request(self) -> None:
+        """只供同机网页桥接使用，不能凭此密钥访问其它管理 API。"""
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            raise ApiError(403, "桥接接口仅限本机")
+        path = os.environ.get("AGY_ACCOUNTS_BRIDGE_KEY", "/etc/agy-powertools/accounts.key")
+        key = read_bytes(path)
+        if not key or not re.fullmatch(rb"[a-f0-9]{64}", key.strip()):
+            raise ApiError(403, "账号桥接未配置")
+        provided = self.headers.get("X-Agy-Accounts-Bridge", "").encode("utf-8")
+        if not hmac.compare_digest(key.strip(), provided):
+            raise ApiError(403, "账号桥接认证失败")
+        body = self._read_body()
+        action = body.get("action")
+        if action == "list":
+            result = self.app.powertools_accounts()
+        elif action == "refresh":
+            self.app.refresh_powertools_quotas(force=True)
+            result = self.app.powertools_accounts()
+        elif action == "switch":
+            if body.get("confirmed") is not True or not isinstance(body.get("expectedCurrentId"), str):
+                raise ApiError(400, "切换须明确确认，并提供当前账号状态")
+            result = self.app.start_powertools_switch(body.get("accountId"), body["expectedCurrentId"])
+        else:
+            raise ApiError(400, "不支持此账号操作")
+        self._json(200, dict(result, ok=True))
+
     def _require_csrf(self) -> None:
         if self.headers.get(CSRF_HEADER, "") != "1":
             raise ApiError(400, "缺少请求校验头")
@@ -2488,8 +2517,11 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         try:
-            self._require_csrf()
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+            if path == "/internal/powertools/accounts":
+                self._powertools_request()
+                return
+            self._require_csrf()
 
             if path == "/api/login":
                 self._handle_login()
@@ -2665,6 +2697,78 @@ class App:
         self.quota = QuotaManager(cfg, self.switcher)
         self.usage = UsageStats(cfg)
         self.failover = FailoverManager(cfg, self.switcher)
+        self._pw_job_lock = threading.Lock()
+        self._pw_state_lock = threading.Lock()
+        self._pw_job: Dict[str, Any] = {}
+        self._pw_refresh_lock = threading.Lock()
+        self._pw_refresh_at = 0.0
+
+    def refresh_powertools_quotas(self, force: bool = False) -> None:
+        if not self._pw_refresh_lock.acquire(blocking=False):
+            return
+        if time.monotonic() - self._pw_refresh_at < 30:
+            self._pw_refresh_lock.release()
+            return
+        self._pw_refresh_at = time.monotonic()
+
+        def refresh() -> None:
+            try:
+                self.quota.get_all(force)
+            except Exception:
+                log.exception("内置账号页刷新额度失败")
+            finally:
+                self._pw_refresh_lock.release()
+
+        threading.Thread(target=refresh, daemon=True).start()
+
+    def powertools_accounts(self) -> Dict[str, Any]:
+        accounts = list_accounts(self.cfg)
+        quotas = self.quota.get_all(cache_only=True)["quotas"]
+        with self._pw_state_lock:
+            job = dict(self._pw_job)
+        rows = [{key: account[key] for key in ("id", "name", "email", "is_current", "has_token")}
+                for account in accounts]
+        for row in rows:
+            row["quota"] = quotas.get(row["id"], {"status": "loading"})
+        if not job.get("active") and any(
+                row["quota"].get("status") == "loading" or
+                now() - row["quota"].get("fetched_at", 0) >= self.cfg["quota_ttl"] for row in rows):
+            self.refresh_powertools_quotas()
+        return {"accounts": rows, "currentId": next((row["id"] for row in rows if row["is_current"]), ""),
+                "switching": self.switcher.state(), "switchJob": job,
+                "refreshing": self._pw_refresh_lock.locked()}
+
+    def start_powertools_switch(self, account_id: str, expected_current: str) -> Dict[str, Any]:
+        account_id = safe_account_id(account_id)
+        read_target_token(self.cfg, account_id)
+        if not self._pw_job_lock.acquire(blocking=False):
+            raise ApiError(409, "已有账号切换正在执行")
+        job_id = secrets.token_hex(16)
+        with self._pw_state_lock:
+            self._pw_job = {"id": job_id, "active": True, "accountId": account_id,
+                            "state": "pending", "message": "正在切换并验证登录，请稍候"}
+
+        def switch() -> None:
+            state, message = "failed", "切换状态无法确认，请检查当前账号"
+            try:
+                with self.operation_lock.hold("内置账号切换"):
+                    current = next((row["id"] for row in list_accounts(self.cfg) if row["is_current"]), "")
+                    if current != expected_current:
+                        raise ApiError(409, "当前账号已变化，未执行切换，请刷新后重试")
+                    result = self.switcher.switch_locked(account_id)
+                state, message = "success", result["message"]
+            except ApiError as exc:
+                state, message = "failed", exc.message
+            except Exception:
+                log.exception("内置账号切换异常")
+                state, message = "failed", "切换状态无法确认，请检查当前账号，不要重复切换"
+            finally:
+                with self._pw_state_lock:
+                    self._pw_job.update(active=False, state=state, message=message)
+                self._pw_job_lock.release()
+
+        threading.Thread(target=switch, daemon=True).start()
+        return {"jobId": job_id}
 
     def status_payload(self) -> Dict[str, Any]:
         accounts = list_accounts(self.cfg)

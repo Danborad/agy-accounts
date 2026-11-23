@@ -4,6 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { createAccountClient } from './account-client.mjs';
 
 const MAX_BODY = 64 * 1024;
 const RESTRICTED = { multiAccount: false, autoSwitchAccount: false, proxyEnabled: false, fileContextMenu: false };
@@ -56,7 +57,7 @@ export async function loadPlugin(pluginDir, dataDir, appDataDir) {
 }
 
 export function createBridge({ plugin, secret, home = homedir(), service = 'agy-server', scriptSource,
-                                appDataDir = join(home, '.gemini', 'antigravity') }) {
+                                accountScript = '', accountClient }) {
   let cachedUi;
   let buildingUi;
   const authorized = req => {
@@ -78,6 +79,12 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
       source = source.replace(`location.origin===${JSON.stringify(sentinel)}`, 'Boolean(globalThis.__agyPowertoolsWeb)');
       source = source.replace(/^globalThis\.__agyInitialSettings=.*;$/m,
         `globalThis.__agyInitialSettings=${JSON.stringify(webSettings(plugin.store.get()))};`);
+      const slot = "tab==='quota'?h(Quotas)";
+      if (!source.includes(slot) || !source.includes("['quota',opts.multiAccount?")
+          || !source.includes('        h(About),')) throw Error('插件账号页结构不兼容，停止注入');
+      source = source.replace(slot, "tab==='quota'?h(globalThis.__agyWebAccountsPanel)");
+      source = source.replace("['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):'额度']", "['quota','账号与额度']");
+      source = source.replace('        h(About),', '        h(globalThis.__agyWebAccountsPanel),h(About),');
       cachedUi = { key, source };
       return source;
     })();
@@ -87,10 +94,24 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
     if (!request || typeof request !== 'object' || Array.isArray(request)
         || !Number.isSafeInteger(request.id) || request.id <= 0 || typeof request.method !== 'string') throw Error('请求格式无效');
     const current = webSettings(plugin.store.get());
-    if (!current.enabled && !['settings.get', 'settings.set', 'update.check', 'update.status'].includes(request.method)) {
+    if (!current.enabled && !request.method.startsWith('serverAccounts.')
+        && !['settings.get', 'settings.set', 'update.check', 'update.status'].includes(request.method)) {
       throw Error('Powertools 已关闭');
     }
     switch (request.method) {
+      case 'serverAccounts.list':
+      case 'serverAccounts.refresh':
+        if (!accountClient) throw Error('账号后端未接入');
+        return accountClient(request.method.split('.')[1]);
+      case 'serverAccounts.switch':
+        if (!accountClient) throw Error('账号后端未接入');
+        if (request.confirmed !== true || typeof request.accountId !== 'string'
+            || !/^[\w.\-\u4e00-\u9fff]{1,64}$/u.test(request.accountId)
+            || ['.', '..'].includes(request.accountId) || typeof request.expectedCurrentId !== 'string') {
+          throw Error('切换请求无效或未确认');
+        }
+        return accountClient('switch', { accountId: request.accountId,
+          expectedCurrentId: request.expectedCurrentId, confirmed: true });
       case 'settings.get': return current;
       case 'settings.set':
         validateSettings(request.settings);
@@ -128,7 +149,7 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
         const result = await plugin.updates.checkForUpdates({ currentVersion: plugin.version });
         return { ...result, canInstall: false, asset: undefined };
       }
-      default: throw Error('网页版暂不支持此操作；切号、重启和更新请使用原账号面板或主机管理。');
+      default: throw Error('网页版暂不支持此桌面操作；切号请使用内置账号页。');
     }
   };
   const send = (res, status, body, type = 'application/json; charset=utf-8') => {
@@ -143,6 +164,7 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
       }
       if (!authorized(req)) { send(res, 403, { error: '拒绝直接访问插件桥接服务' }); return; }
       if (req.method === 'GET' && req.url === '/bootstrap.js') { send(res, 200, scriptSource, 'application/javascript; charset=utf-8'); return; }
+      if (req.method === 'GET' && req.url === '/accounts.js') { send(res, 200, accountScript, 'application/javascript; charset=utf-8'); return; }
       if (req.method === 'GET' && req.url === '/ui.js') { send(res, 200, await frontend(), 'application/javascript; charset=utf-8'); return; }
       if (req.method !== 'POST' || req.url !== '/rpc') { send(res, 404, { error: '未找到接口' }); return; }
       let origin;
@@ -181,7 +203,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (!/^[a-f0-9]{64}$/.test(secret)) throw Error('桥接密钥格式无效');
   const plugin = await loadPlugin(pluginDir, dataDir, appDataDir);
   const scriptSource = readFileSync(new URL('./browser.js', import.meta.url), 'utf8');
-  const server = createBridge({ plugin, secret, home, appDataDir, service: process.env.AGY_POWERTOOLS_SERVICE || 'agy-server', scriptSource });
+  const accountScript = readFileSync(new URL('./accounts.js', import.meta.url), 'utf8');
+  const accountClient = createAccountClient({ base: process.env.AGY_ACCOUNTS_URL || 'http://127.0.0.1:8790' });
+  const server = createBridge({ plugin, secret, home, service: process.env.AGY_POWERTOOLS_SERVICE || 'agy-server',
+    scriptSource, accountScript, accountClient });
   server.listen(Number(process.env.AGY_POWERTOOLS_PORT || 8791), '127.0.0.1', () => console.log(`Powertools ${plugin.version} 网页桥接就绪`));
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => server.close(() => process.exit(0)));
 }

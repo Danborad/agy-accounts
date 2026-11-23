@@ -3,6 +3,16 @@
   if (window !== window.top || window.__agyPowertoolsWeb) return;
   const endpoint = '/__agy-powertools/';
   window.__agyPowertoolsWeb = { transport: 'same-origin' };
+  window.__agyPowertoolsWeb.rpc = async (method, payload = {}) => {
+    const response = await fetch(`${endpoint}rpc`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-Agy-Powertools': '1' },
+      body: JSON.stringify({ ...payload, id: 1, method }), signal: AbortSignal.timeout(18000),
+    });
+    const data = await response.json();
+    if (!response.ok || data.error) throw Error(data.error || '插件服务暂时不可用');
+    return data;
+  };
   window.__agyPowertoolsHost = async payload => {
     let request;
     try {
@@ -27,12 +37,15 @@
   const style = document.createElement('style');
   style.textContent = restricted.map(key => `[data-testid="agy-setting-row-${key}"] { opacity: .55; }`).join('\n');
   document.head.append(style);
+  const accountStyle = document.createElement('style');
+  accountStyle.textContent = '.agy-server-quota{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:12px}[data-server-account]{padding:16px}[data-testid="agy-page-tabs"]{overflow-x:auto;max-width:100%;scrollbar-width:none;white-space:nowrap}[data-testid="agy-page-tabs"]>button{flex-shrink:0}.agy-server-bucket{display:flex;flex-wrap:wrap;gap:8px;font-size:12px;padding:4px 0}.agy-server-button{cursor:pointer;padding:7px 12px;border:1px solid var(--border);border-radius:8px}.agy-server-button:disabled{opacity:.5;cursor:default}.agy-server-confirm{position:fixed;inset:0;background:#0009;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px}.agy-server-confirm>.pt-card{max-width:480px;background:var(--card);padding:20px}';
+  document.head.append(accountStyle);
   const updateControls = () => {
     for (const key of restricted) {
       const control = document.querySelector(`[data-testid="agy-setting-${key}"]`);
       if (control && !control.disabled) {
         control.disabled = true;
-        control.title = '网页版暂不支持；账号切换请继续使用现有账号面板。';
+        control.title = '此桌面功能不适用于服务器；切号请使用内置的账号与额度页。';
       }
     }
     const accountRow = document.querySelector('[data-testid="agy-setting-row-multiAccount"]');
@@ -48,13 +61,7 @@
     if (page && !document.querySelector('[data-agy-web-notice]')) {
       const note = document.createElement('p');
       note.dataset.agyWebNotice = '';
-      note.append('网页版测试：界面与统计已接入。切号请使用 ');
-      const link = document.createElement('a');
-      link.href = `${location.protocol}//${location.hostname}:8790/`;
-      link.target = '_blank';
-      link.rel = 'noopener';
-      link.textContent = '原账号面板';
-      note.append(link, '；费用仅为 API 参考估算，不是订阅账单。');
+      note.textContent = '账号额度与切换已内置在「账号与额度」和设置页；费用仅为 API 参考估算，不是订阅账单。';
       note.style.cssText = 'font-size:12px;line-height:1.6;opacity:.65;margin:12px 0';
       page.parentElement.after(note);
     }
@@ -80,7 +87,11 @@
         }
       }, 500);
     };
-    document.head.append(script);
+    const accounts = document.createElement('script');
+    accounts.src = `${endpoint}accounts.js`;
+    accounts.onload = () => document.head.append(script);
+    accounts.onerror = script.onerror;
+    document.head.append(accounts);
     clearInterval(timer);
   };
   const timer = setInterval(load, 250);

@@ -56,7 +56,7 @@ if [[ "${WITH_POWERTOOLS}" != "0" && -d "${HOME}/.gemini/config/plugins/agy-powe
   if POWERTOOLS_NODE="$(find_node)"; then
     info "安装 Powertools 网页桥接"
     install -d -m 0755 "${PREFIX}/powertools"
-    install -m 0644 "${SRC}/powertools/server.mjs" "${SRC}/powertools/browser.js" "${PREFIX}/powertools/"
+    install -m 0644 "${SRC}/powertools/"*.mjs "${SRC}/powertools/"*.js "${PREFIX}/powertools/"
     install -d -m 0700 /etc/agy-powertools
     install -d -m 0700 "${HOME}/.gemini/antigravity/plugin_data/agy-powertools-web"
     if [[ ! -s "${POWERTOOLS_KEY}" ]]; then
@@ -64,6 +64,9 @@ if [[ "${WITH_POWERTOOLS}" != "0" && -d "${HOME}/.gemini/config/plugins/agy-powe
       chmod 0600 "${POWERTOOLS_KEY}"
     fi
     BRIDGE_KEY="$(cat "${POWERTOOLS_KEY}")"
+    if [[ ! -s /etc/agy-powertools/accounts.key ]]; then
+      (umask 077; python3 -c 'import secrets; print(secrets.token_hex(32))' > /etc/agy-powertools/accounts.key)
+    fi
     [[ "${BRIDGE_KEY}" =~ ^[a-f0-9]{64}$ ]] || die "桥接密钥格式无效：${POWERTOOLS_KEY}"
     sed "s|__BRIDGE_KEY__|${BRIDGE_KEY}|g" \
       "${SRC}/deploy/agy-powertools-nginx.inc" > "${POWERTOOLS_CONF}"
@@ -117,7 +120,7 @@ if systemctl is-active --quiet agy-i18n-proxy; then
   echo "   关闭汉化：在网址后加 ?no-i18n=1"
   echo "   恢复汉化：在网址后加 ?i18n=1"
   if [[ -n "${POWERTOOLS_SCRIPT}" ]]; then
-    echo "   Powertools：登录后左侧边栏出现 Powertools 入口；切号仍使用原账号面板"
+    echo "   Powertools：账号额度和切换已接入设置页，无需另开账号面板"
   fi
 else
   die "代理启动失败，查看 journalctl -u agy-i18n-proxy"

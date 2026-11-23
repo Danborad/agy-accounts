@@ -703,6 +703,75 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(self.loaded["password_hash"], old_hash)
         self.assertEqual(agy_accounts.read_json(self.config_path)["password_hash"], old_hash)
 
+    def test_internal_accounts_require_key_and_do_not_authorize_other_routes(self):
+        path = os.path.join(self.tmp, "accounts.key")
+        agy_accounts.write_atomic(path, b"a" * 64)
+        with mock.patch.dict(os.environ, {"AGY_ACCOUNTS_BRIDGE_KEY": path}):
+            self.assertEqual(self.request("POST", "/internal/powertools/accounts", {"action": "list"})[0], 403)
+            headers = {"Content-Type": "application/json", "X-Agy-Accounts-Bridge": "a" * 64}
+            def internal(body, route="/internal/powertools/accounts"):
+                conn = http.client.HTTPConnection("127.0.0.1", self.port)
+                conn.request("POST", route, body=json.dumps(body), headers=headers)
+                response = conn.getresponse()
+                result = (response.status, json.loads(response.read()))
+                conn.close()
+                return result
+
+            self.write_token('{"access_token":"candidate"}')
+            account = agy_accounts.save_account(self.loaded, "candidate")
+            with mock.patch.object(self.app.quota, "get_all", return_value={"quotas": {}}), \
+                    mock.patch.object(self.app, "refresh_powertools_quotas"):
+                status, data = internal({"action": "list"})
+            self.assertEqual(status, 200)
+            self.assertEqual(data["currentId"], account["id"])
+            self.assertNotIn("access_token", json.dumps(data))
+            self.assertNotIn("refresh_token", json.dumps(data))
+            self.assertNotIn("accounts_dir", data)
+            self.assertEqual(internal({"action": "delete", "accountId": account["id"]})[0], 400)
+            self.assertEqual(internal({}, "/api/password")[0], 400)
+            self.assertEqual(internal({"action": "switch", "accountId": account["id"]})[0], 400)
+
+    def test_background_switch_uses_shared_lock_and_reports_verification_result(self):
+        self.write_token('{"access_token":"candidate"}')
+        account = agy_accounts.save_account(self.loaded, "candidate")
+        self.write_token('{"access_token":"original"}')
+
+        def complete_job():
+            self.assertTrue(self.app._pw_job_lock.acquire(timeout=5))
+            self.app._pw_job_lock.release()
+            return dict(self.app._pw_job)
+
+        # A stale browser must never switch a newly selected account.
+        self.app.start_powertools_switch(account["id"], "stale-current")
+        self.assertEqual(complete_job()["state"], "failed")
+        self.assertEqual(agy_accounts.read_bytes(self.token_path), b'{"access_token":"original"}')
+        self.verify_auth.assert_not_called()
+
+        with self.app.operation_lock.hold("系统更新"):
+            self.app.start_powertools_switch(account["id"], "")
+            self.assertEqual(complete_job()["state"], "failed")
+        self.verify_auth.assert_not_called()
+
+        self.verify_auth.return_value = None
+        result = self.app.start_powertools_switch(account["id"], "")
+        job = complete_job()
+        self.assertEqual(job["id"], result["jobId"])
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("已回滚", job["message"])
+        self.assertEqual(agy_accounts.read_bytes(self.token_path), b'{"access_token":"original"}')
+
+        self.verify_auth.return_value = {"signed_in": True, "ineligible": False, "message": ""}
+        self.app.start_powertools_switch(account["id"], "")
+        self.assertEqual(complete_job()["state"], "success")
+        self.assertEqual(agy_accounts.read_bytes(self.token_path), b'{"access_token":"candidate"}')
+
+    def test_cached_quota_read_does_not_wait_for_network_refresh(self):
+        self.write_token('{"access_token":"candidate"}')
+        agy_accounts.save_account(self.loaded, "candidate")
+        with self.app.quota._fetch_lock:
+            result = self.app.quota.get_all(cache_only=True)
+        self.assertEqual(len(result["quotas"]), 1)
+
 
 class UsagePerformanceTest(unittest.TestCase):
     @staticmethod
