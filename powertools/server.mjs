@@ -9,6 +9,7 @@ import { createAccountClient } from './account-client.mjs';
 const MAX_BODY = 64 * 1024;
 const RESTRICTED = { multiAccount: false, autoSwitchAccount: false, proxyEnabled: false, fileContextMenu: false };
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
+const ACCOUNT_ID = /^[\w.\-\u4e00-\u9fff]{1,64}$/u;
 
 export function webSettings(settings) {
   return { ...settings, ...RESTRICTED };
@@ -106,12 +107,20 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
       case 'serverAccounts.switch':
         if (!accountClient) throw Error('账号后端未接入');
         if (request.confirmed !== true || typeof request.accountId !== 'string'
-            || !/^[\w.\-\u4e00-\u9fff]{1,64}$/u.test(request.accountId)
+            || !ACCOUNT_ID.test(request.accountId)
             || ['.', '..'].includes(request.accountId) || typeof request.expectedCurrentId !== 'string') {
           throw Error('切换请求无效或未确认');
         }
         return accountClient('switch', { accountId: request.accountId,
           expectedCurrentId: request.expectedCurrentId, confirmed: true });
+      case 'serverAccounts.alias':
+        if (!accountClient) throw Error('账号后端未接入');
+        if (typeof request.accountId !== 'string' || !ACCOUNT_ID.test(request.accountId)
+            || ['.', '..'].includes(request.accountId)
+            || typeof request.alias !== 'string' || request.alias.length > 60) {
+          throw Error('账号备注无效');
+        }
+        return accountClient('alias', { accountId: request.accountId, alias: request.alias });
       case 'settings.get': return current;
       case 'settings.set':
         validateSettings(request.settings);

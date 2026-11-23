@@ -75,6 +75,10 @@ test('桥接认证、Origin 校验和 RPC 白名单', async t => {
     assert.equal((await rpc('serverAccounts.switch', { accountId: '../../etc/passwd', confirmed: true, expectedCurrentId: '' })).status, 400);
     assert.equal((await rpc('serverAccounts.switch', { accountId: '主账号', confirmed: true, expectedCurrentId: 'previous' })).status, 200);
     assert.deepEqual(calls.at(-1), { action: 'switch', payload: { accountId: '主账号', confirmed: true, expectedCurrentId: 'previous' } });
+    assert.equal((await rpc('serverAccounts.alias', { accountId: '主账号', alias: '新备注' })).status, 200);
+    assert.deepEqual(calls.at(-1), { action: 'alias', payload: { accountId: '主账号', alias: '新备注' } });
+    assert.equal((await rpc('serverAccounts.alias', { accountId: '主账号', alias: 'x'.repeat(61) })).status, 400);
+    assert.equal((await rpc('serverAccounts.alias', { accountId: '../x', alias: 'a' })).status, 400);
     assert.equal((await rpc('state', { conversationId: '../../etc/passwd' })).status, 400);
     assert.equal((await rpc('subagents.stats', { conversationIds: Array(33).fill('id') })).status, 400);
     assert.equal((await (await rpc('update.check')).json()).canInstall, false);

@@ -22,15 +22,24 @@ async function openAccounts(page) {
                 { id: 'b', name: '备用账号', email: 'b@example.com', has_token: true, quota: {
                     tier: 'Ultra', groups: [{ key: 'claude', label: 'Claude', windows: { weekly: { remaining: .5 } } }],
                 } },
-                { id: 'c', name: '待登录', email: 'c@example.com', has_token: false, quota: {} },
+                { id: 'c', name: 'c@example.com', email: 'c@example.com', has_token: false, quota: {} },
             ], currentId: 'a', switchJob: {},
         };
         window.switchCalls = [];
+        window.aliasCalls = [];
         window.__agyPowertoolsWeb = { rpc: async (method, payload) => {
             if (method === 'serverAccounts.switch') {
                 window.switchCalls.push(payload);
-                window.testState.switchJob = { id: 'test-job', state: 'failed', active: false, message: '验证失败，已回滚原账号' };
+                window.testState = { ...window.testState, switchJob: {
+                    id: 'test-job', state: 'failed', active: false, message: '验证失败，已回滚原账号',
+                } };
                 return { jobId: 'test-job' };
+            }
+            if (method === 'serverAccounts.alias') {
+                window.aliasCalls.push(payload);
+                window.testState = { ...window.testState, accounts: window.testState.accounts.map(item =>
+                    item.id === payload.accountId ? { ...item, name: payload.alias.trim() || item.email } : item) };
+                return window.testState;
             }
             return window.testState;
         } };
@@ -57,6 +66,28 @@ for (const width of [390, 1440]) {
         const missing = page.locator('[data-server-account="c"]');
         await expect(missing.locator('.agy-server-login')).toHaveText('缺少登录');
         await expect(missing.getByTestId('agy-server-switch')).toBeDisabled();
+
+        await page.getByTestId('agy-server-privacy').click();
+        await expect(first.locator('.agy-server-email')).toHaveText('***@example.com');
+        await expect(first.locator('.agy-server-alias')).toHaveText('***');
+        await page.getByTestId('agy-server-privacy').click();
+        await expect(first.locator('.agy-server-email')).toHaveText('a@example.com');
+        await expect(first.locator('.agy-server-alias')).toHaveText('主账号');
+
+        await page.locator('[data-server-account="c"]').getByTestId('agy-server-alias-add').click();
+        await expect(page.getByRole('dialog', { name: '编辑账号备注' })).toBeVisible();
+        await page.getByTestId('agy-server-alias-input').fill('新备注');
+        await page.getByTestId('agy-server-alias-save').click();
+        await expect(page.locator('[data-server-account="c"] .agy-server-alias')).toHaveText('新备注');
+        await page.locator('[data-server-account="c"]').getByTestId('agy-server-alias-edit').click();
+        await page.getByTestId('agy-server-alias-clear').click();
+        await expect(page.locator('[data-server-account="c"] .agy-server-alias')).toHaveCount(0);
+        await expect(page.locator('[data-server-account="c"]').getByTestId('agy-server-alias-add')).toBeVisible();
+        expect(await page.evaluate(() => window.aliasCalls)).toEqual([
+            { accountId: 'c', alias: '新备注' },
+            { accountId: 'c', alias: '' },
+        ]);
+
         await page.getByTestId('agy-server-switch').first().click();
         await expect(page.getByRole('dialog')).toBeVisible();
         expect(await page.evaluate(() => window.switchCalls.length)).toBe(0);

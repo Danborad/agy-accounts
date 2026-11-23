@@ -1,6 +1,7 @@
 /* Minimal account UI: credentials and switching remain in agy-accounts. */
 (() => {
   const key = 'agy-web-account-switch-job';
+  const privacyKey = 'agy-web-account-privacy';
   window.__agyWebAccountsPanel = function AccountsPanel() {
     const R = window.React;
     const h = R.createElement;
@@ -10,6 +11,11 @@
     const [busy, setBusy] = R.useState(false);
     const [message, setMessage] = R.useState('');
     const [jobId, setJobId] = R.useState(() => sessionStorage.getItem(key) || '');
+    const [privacy, setPrivacy] = R.useState(() => localStorage.getItem(privacyKey) === '1');
+    const [aliasTarget, setAliasTarget] = R.useState(null);
+    const [aliasDraft, setAliasDraft] = R.useState('');
+    const [aliasBusy, setAliasBusy] = R.useState(false);
+    const [aliasError, setAliasError] = R.useState('');
     const pending = R.useRef(false);
     const lastJob = R.useRef(jobId);
     R.useEffect(() => {
@@ -65,15 +71,48 @@
       catch (failure) { setError(failure.message); }
       finally { setBusy(false); }
     };
+    const togglePrivacy = () => {
+      const next = !privacy;
+      setPrivacy(next);
+      localStorage.setItem(privacyKey, next ? '1' : '0');
+    };
+    const saveAlias = async value => {
+      if (!aliasTarget || aliasBusy) return;
+      setAliasBusy(true);
+      setAliasError('');
+      try {
+        setData(await window.__agyPowertoolsWeb.rpc('serverAccounts.alias', {
+          accountId: aliasTarget.id, alias: value.trim(),
+        }));
+        setAliasTarget(null);
+      } catch (failure) { setAliasError(failure.message); }
+      finally { setAliasBusy(false); }
+    };
+    const hasAlias = account => Boolean(account.email && account.name
+      && account.name !== account.email && account.name !== account.id);
+    const maskEmail = email => privacy ? (email?.includes('@') ? `***@${email.split('@').pop()}` : '***') : email;
+    const maskAlias = alias => privacy ? '***' : alias;
     const switching = busy || Boolean(jobId) || data?.switchJob?.active || data?.switching?.active;
     const button = (text, onClick, disabled, props = {}) => h('button', {
       type: 'button', className: 'agy-field agy-server-button', onClick, disabled, ...props,
     }, text);
+    const eyeIcon = off => h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none',
+      stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true' },
+      h('path', { d: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z' }),
+      h('circle', { cx: 12, cy: 12, r: 3 }),
+      off && h('path', { d: 'M3 3l18 18' }));
+    const aliasButton = account => h('button', {
+      type: 'button', className: 'agy-server-alias-button', disabled: switching,
+      onClick: () => { setAliasTarget(account); setAliasDraft(hasAlias(account) ? account.name : ''); setAliasError(''); },
+      'data-testid': hasAlias(account) ? 'agy-server-alias-edit' : 'agy-server-alias-add',
+      'aria-label': hasAlias(account) ? '编辑备注' : '添加备注',
+      title: hasAlias(account) ? '编辑备注' : '添加备注',
+    }, hasAlias(account) ? '编辑' : '添加备注');
     const identity = account => h('div', { className: 'agy-server-identity' },
-      h('strong', { className: 'agy-server-email' }, account.email || account.name),
+      h('strong', { className: 'agy-server-email' }, maskEmail(account.email || account.name)),
       h('div', { className: 'agy-server-meta' },
-        account.name && account.name !== account.email
-          && h('span', { className: 'agy-server-alias', title: '账号备注' }, account.name),
+        hasAlias(account) && h('span', { className: 'agy-server-alias', title: '账号备注' }, maskAlias(account.name)),
+        aliasButton(account),
         h('span', { className: `agy-server-login${account.has_token ? '' : ' is-missing'}` },
           account.has_token ? '已保存登录' : '缺少登录'),
         account.quota?.tier && h('span', { className: 'agy-server-tier' }, account.quota.tier)));
@@ -102,8 +141,13 @@
     };
     return h('section', { className: 'pt-stack', 'data-testid': 'agy-server-accounts' },
       h('div', { className: 'pt-row' }, h('h3', null, '账号额度与切换'),
-        button(data?.refreshing ? '刷新中…' : '刷新额度', refresh, switching || data?.refreshing,
-          { 'data-testid': 'agy-server-accounts-refresh' })),
+        h('div', { className: 'agy-server-actions' },
+          h('button', { type: 'button', className: 'agy-server-icon-button', onClick: togglePrivacy,
+            title: privacy ? '显示邮箱和备注' : '隐藏邮箱和备注',
+            'aria-label': privacy ? '显示邮箱和备注' : '隐藏邮箱和备注',
+            'data-testid': 'agy-server-privacy' }, eyeIcon(privacy)),
+          button(data?.refreshing ? '刷新中…' : '刷新额度', refresh, switching || data?.refreshing,
+            { 'data-testid': 'agy-server-accounts-refresh' }))),
       h('p', { className: 'pt-muted' }, '使用已有账号快照；切换后验证登录，失败时回滚。无需另开账号面板。'),
       error && h('p', { role: 'alert', className: 'pt-alert' }, error),
       message && h('p', { role: 'status' }, message),
@@ -120,11 +164,24 @@
           `${data.refreshing ? '正在更新；缓存时间' : '更新时间'}：${new Date(account.quota.fetched_at * 1000).toLocaleString()}`),
         account.quota?.error && h('p', { className: 'pt-muted' }, `当前为缓存额度：${account.quota.error}`)))),
       target && h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '确认切换账号', className: 'agy-server-confirm' },
-        h('div', { className: 'pt-card' }, h('h3', null, `切换到「${target.email || target.name}」？`),
-          target.name && target.name !== target.email && h('p', { className: 'pt-muted' }, `备注：${target.name}`),
+        h('div', { className: 'pt-card' }, h('h3', null, `切换到「${maskEmail(target.email || target.name)}」？`),
+          hasAlias(target) && h('p', { className: 'pt-muted' }, `备注：${maskAlias(target.name)}`),
           h('p', null, '切换会重启 Antigravity，正在生成的回复可能中断。请确认当前任务已结束；失败时会尝试恢复原凭据。'),
           h('div', { className: 'pt-row' }, button('取消', () => setTarget(null), busy),
             button(busy ? '提交中…' : '确认切换', requestSwitch, busy || Boolean(jobId),
-              { 'data-testid': 'agy-server-switch-confirm' })))));
+              { 'data-testid': 'agy-server-switch-confirm' })))),
+      aliasTarget && h('div', { role: 'dialog', 'aria-modal': 'true', 'aria-label': '编辑账号备注', className: 'agy-server-confirm' },
+        h('div', { className: 'pt-card' }, h('h3', null, '编辑账号备注'),
+          h('p', { className: 'pt-muted' }, maskEmail(aliasTarget.email || aliasTarget.name)),
+          h('input', { type: 'text', maxLength: 60, value: aliasDraft, onChange: event => setAliasDraft(event.target.value),
+            placeholder: '例如：公司备用号', className: 'agy-field', 'data-testid': 'agy-server-alias-input' }),
+          aliasError && h('p', { role: 'alert', className: 'pt-alert' }, aliasError),
+          h('div', { className: 'pt-row' },
+            button('取消', () => setAliasTarget(null), aliasBusy),
+            button('清除备注', () => saveAlias(''), aliasBusy || !hasAlias(aliasTarget),
+              { 'data-testid': 'agy-server-alias-clear' }),
+            button(aliasBusy ? '保存中…' : '保存', () => saveAlias(aliasDraft),
+              aliasBusy || !aliasDraft.trim() || aliasDraft.trim() === String(aliasTarget.name || ''),
+              { 'data-testid': 'agy-server-alias-save' })))));
   };
 })();

@@ -46,6 +46,11 @@
     .agy-server-alias{color:var(--foreground,#eee);background:var(--secondary,#222)}
     .agy-server-login.is-missing{color:var(--error,#ef4444);border-color:var(--error,#ef4444)}
     .agy-server-current{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--primary,#2563eb);color:#fff;white-space:nowrap}
+    .agy-server-actions{display:flex;align-items:center;gap:8px}
+    .agy-server-icon-button{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:1px solid var(--border,#333);border-radius:8px;background:transparent;color:inherit;cursor:pointer}
+    .agy-server-icon-button:hover{background:var(--secondary,#222)}
+    .agy-server-alias-button{padding:0 2px;border:0;background:transparent;color:var(--muted-foreground,#9ca3af);font-size:11px;line-height:1.5;cursor:pointer;text-decoration:underline}
+    .agy-server-alias-button:disabled{opacity:.4;cursor:default}
     .agy-server-quota{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-top:14px}
     .agy-server-quota-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12px;padding:3px 0}
     .agy-server-quota-label{width:48px;flex:none;color:var(--muted-foreground,#9ca3af)}
@@ -63,6 +68,7 @@
     .agy-server-button:disabled{opacity:.5;cursor:default}
     .agy-server-confirm{position:fixed;inset:0;background:#0009;z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px}
     .agy-server-confirm>.pt-card{max-width:480px;background:var(--card);padding:20px}
+    .agy-server-confirm .agy-field{width:100%;margin-top:8px;padding:7px 10px;border:1px solid var(--border);border-radius:8px;background:var(--background);color:var(--foreground)}
   `;
   document.head.append(accountStyle);
   const updateControls = () => {

@@ -2423,6 +2423,11 @@ class PanelHandler(BaseHTTPRequestHandler):
             if body.get("confirmed") is not True or not isinstance(body.get("expectedCurrentId"), str):
                 raise ApiError(400, "切换须明确确认，并提供当前账号状态")
             result = self.app.start_powertools_switch(body.get("accountId"), body["expectedCurrentId"])
+        elif action == "alias":
+            account_id, alias = body.get("accountId"), body.get("alias")
+            if not isinstance(account_id, str) or not isinstance(alias, str) or len(alias) > MAX_NAME:
+                raise ApiError(400, "账号备注无效")
+            result = self.app.set_powertools_alias(account_id, alias)
         else:
             raise ApiError(400, "不支持此账号操作")
         self._json(200, dict(result, ok=True))
@@ -2769,6 +2774,20 @@ class App:
 
         threading.Thread(target=switch, daemon=True).start()
         return {"jobId": job_id}
+
+    def set_powertools_alias(self, account_id: str, alias: str) -> Dict[str, Any]:
+        account_id = safe_account_id(account_id)
+        alias = alias.strip()
+        if len(alias) > MAX_NAME:
+            raise ApiError(400, "账号备注不能超过 %d 个字符" % MAX_NAME)
+        _path, _token, meta = read_target_token(self.cfg, account_id)
+        fallback = str(meta.get("email") or account_id).strip()
+        target = alias or fallback
+        if target.lower() == str(meta.get("name") or "").strip().lower():
+            return self.powertools_accounts()
+        with self.operation_lock.hold("编辑账号备注"):
+            rename_account(self.cfg, account_id, target)
+        return self.powertools_accounts()
 
     def status_payload(self) -> Dict[str, Any]:
         accounts = list_accounts(self.cfg)
