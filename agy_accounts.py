@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.9.12"
+VERSION = "1.10.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")

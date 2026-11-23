@@ -96,8 +96,34 @@ Antigravity 在机器上的状态分三层：
 - 运行时仅依赖 Python 3.9+ 标准库；前端是已构建的静态文件
 - 登录限速、CSRF 校验、跨站 Origin 拒绝、会话 Cookie 加固
 - Antigravity 网页汉化：8766 注入代理，`?no-i18n=1` 可关闭
+- 可选 Agy Powertools 网页桥接：在 8766 登录页内提供中文界面、紧凑排版、上下文/速度与请求统计；切号仍使用原账号面板
 
 > Token 用量来自服务器上的 Antigravity 会话数据库，按本机全部会话统计。费用估算已移除，个人自用不需要计费信息。
+
+### Agy Powertools 网页桥接（可选）
+
+如果已在主机上安装 [Agy Powertools](https://github.com/WhiteBr1ck/agy-powertools)，`install-i18n.sh` 会默认接入它的网页桥接，在同一个 8766 登录页内提供：
+
+- 简体中文 / 繁體中文 / English 界面切换、紧凑排版
+- 输入框旁的上下文占用圆环与生成速度统计
+- 请求、错误、额度和用量概览
+- 设置保存在独立目录，刷新后保留
+
+限制与边界：
+
+- 只读访问 `~/.gemini/antigravity`，设置写入 `~/.gemini/antigravity/plugin_data/agy-powertools-web`
+- 不提供切号、自动切号、代理、文件右键菜单和插件自更新；这些继续使用原账号面板或主机配置
+- 费用是 API 参考估算，不是订阅账单
+- 桥接只监听 `127.0.0.1:8791`，由 Nginx 复用 8766 的登录会话；不开放浏览器调试端口
+- 需要 Node.js 22.13+；脚本会用 `NODE_BIN` 或 `/opt/node22/bin/node` 自动查找，找不到时只保留汉化
+
+关闭桥接：
+
+```bash
+AGY_POWERTOOLS=0 ./install-i18n.sh
+```
+
+重新启用：不带 `AGY_POWERTOOLS=0` 重新运行脚本即可。
 
 ## 系统架构
 
@@ -109,6 +135,7 @@ Antigravity 在机器上的状态分三层：
       │        └── 替换 ~/.gemini/jetski-standalone-oauth-token
       │
       └── http://127.0.0.1:8766/        agy-server 中文入口（Nginx 注入）
+               │        └── /__agy-powertools/ → 127.0.0.1:8791（同一登录会话）
                │
                ▼
         http://127.0.0.1:8765/        agy-server 原站

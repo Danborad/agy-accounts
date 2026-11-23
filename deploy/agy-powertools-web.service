@@ -1,0 +1,23 @@
+[Unit]
+Description=Powertools same-origin web bridge for agy-server
+After=network-online.target agy-server.service
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=__HOME__
+Environment=NODE_NO_WARNINGS=1
+Environment=NODE_USE_ENV_PROXY=1
+ExecStart=__NODE__ __PREFIX__/powertools/server.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__HOME__/.gemini/antigravity/plugin_data/agy-powertools-web
+UMask=0077
+MemoryMax=384M
+
+[Install]
+WantedBy=multi-user.target
