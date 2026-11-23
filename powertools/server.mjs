@@ -174,15 +174,18 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
   };
   const server = createServer(async (req, res) => {
     try {
-      if (req.method === 'GET' && req.url === '/healthz') {
+      let path;
+      try { path = new URL(req.url, 'http://127.0.0.1').pathname; }
+      catch { send(res, 400, { error: '请求路径无效' }); return; }
+      if (req.method === 'GET' && path === '/healthz') {
         send(res, 200, { ok: true, version: plugin.version, transport: 'same-origin' });
         return;
       }
       if (!authorized(req)) { send(res, 403, { error: '拒绝直接访问插件桥接服务' }); return; }
-      if (req.method === 'GET' && req.url === '/bootstrap.js') { send(res, 200, scriptSource, 'application/javascript; charset=utf-8'); return; }
-      if (req.method === 'GET' && req.url === '/accounts.js') { send(res, 200, accountScript, 'application/javascript; charset=utf-8'); return; }
-      if (req.method === 'GET' && req.url === '/ui.js') { send(res, 200, await frontend(), 'application/javascript; charset=utf-8'); return; }
-      if (req.method !== 'POST' || req.url !== '/rpc') { send(res, 404, { error: '未找到接口' }); return; }
+      if (req.method === 'GET' && path === '/bootstrap.js') { send(res, 200, scriptSource, 'application/javascript; charset=utf-8'); return; }
+      if (req.method === 'GET' && path === '/accounts.js') { send(res, 200, accountScript, 'application/javascript; charset=utf-8'); return; }
+      if (req.method === 'GET' && path === '/ui.js') { send(res, 200, await frontend(), 'application/javascript; charset=utf-8'); return; }
+      if (req.method !== 'POST' || path !== '/rpc') { send(res, 404, { error: '未找到接口' }); return; }
       let origin;
       try { origin = new URL(req.headers.origin); } catch { /* Missing or invalid origin. */ }
       if (!origin || !['http:', 'https:'].includes(origin.protocol) || origin.host !== req.headers['x-forwarded-host']

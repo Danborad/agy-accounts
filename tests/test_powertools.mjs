@@ -68,6 +68,9 @@ test('桥接认证、Origin 校验和 RPC 白名单', async t => {
     });
     assert.equal((await fetch(`${base}/bootstrap.js`)).status, 403);
     assert.equal((await fetch(`${base}/healthz`)).status, 200);
+    const get = (path, override = {}) => fetch(`${base}${path}`, { headers: { ...headers, ...override } });
+    assert.equal((await get('/bootstrap.js?v=2')).status, 200);
+    assert.equal((await get('/accounts.js?v=2')).status, 200);
     assert.equal((await rpc('settings.get', {}, { 'X-Agy-Powertools-Bridge': 'invalid' })).status, 403);
     assert.equal((await rpc('settings.get', {}, { Origin: 'https://evil.test' })).status, 403);
     assert.equal((await rpc('settings.get', {}, { 'X-Agy-Powertools': '' })).status, 403);

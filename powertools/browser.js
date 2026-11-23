@@ -2,6 +2,7 @@
 (() => {
   if (window !== window.top || window.__agyPowertoolsWeb) return;
   const endpoint = '/__agy-powertools/';
+  const assetVersion = '2';
   window.__agyPowertoolsWeb = { transport: 'same-origin' };
   window.__agyPowertoolsWeb.rpc = async (method, payload = {}) => {
     const response = await fetch(`${endpoint}rpc`, {
@@ -107,7 +108,7 @@
     if (loaded || !window.ReactDOM?.createRoot || !window.createFileRoute) return;
     loaded = true;
     const script = document.createElement('script');
-    script.src = `${endpoint}ui.js`;
+    script.src = `${endpoint}ui.js?v=${assetVersion}`;
     script.onerror = () => console.warn('[Powertools] 插件加载失败，原 Antigravity 页面不受影响。');
     script.onload = () => {
       let attempts = 0;
@@ -121,7 +122,7 @@
       }, 500);
     };
     const accounts = document.createElement('script');
-    accounts.src = `${endpoint}accounts.js`;
+    accounts.src = `${endpoint}accounts.js?v=${assetVersion}`;
     accounts.onload = () => document.head.append(script);
     accounts.onerror = script.onerror;
     document.head.append(accounts);
