@@ -698,6 +698,31 @@ class PanelTest(unittest.TestCase):
             self.app._pw_update_lock.release()
             self.assertEqual(self.app.powertools_update()["check"], {"state": "failed", "checked_at": 0, "error": "网络超时"})
 
+    def test_plugin_update_reserves_shared_lock_and_releases_after_worker(self):
+        started, finish = threading.Event(), threading.Event()
+        root = os.path.join(self.tmp, 'updates')
+        def worker(args, **kwargs):
+            self.assertEqual(args, ['systemctl', 'start', 'agy-powertools-update'])
+            started.set()
+            self.assertTrue(finish.wait(timeout=5))
+            agy_accounts.write_json_atomic(os.path.join(root, 'state.json'), {"status": "completed", "version": "2.14.3"})
+            return mock.Mock(returncode=0)
+        with mock.patch.object(self.app, 'plugin_update_root', return_value=root), \
+                mock.patch.object(agy_accounts.os.path, 'isfile', return_value=True), \
+                mock.patch.object(agy_accounts.subprocess, 'run', side_effect=worker):
+            self.app.start_plugin_update('2.14.3')
+            self.assertTrue(started.wait(timeout=5))
+            with self.assertRaises(agy_accounts.ApiError):
+                self.app.operation_lock.hold('切号').__enter__()
+            with self.assertRaises(agy_accounts.ApiError):
+                self.app.start_plugin_update('2.14.3')
+            finish.set()
+            self.assertTrue(self.app._plugin_update_lock.acquire(timeout=5))
+            self.app._plugin_update_lock.release()
+            with self.app.operation_lock.hold('后续操作'):
+                pass
+            self.assertEqual(self.app.plugin_update_status()['status'], 'completed')
+
     def test_update_rejects_read_only_sandbox_before_downloading(self):
         self.login()
         with mock.patch.object(agy_accounts, "running_language_server_version", return_value="2.30.0"), \

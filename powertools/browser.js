@@ -2,7 +2,7 @@
 (() => {
   if (window !== window.top || window.__agyPowertoolsWeb) return;
   const endpoint = '/__agy-powertools/';
-  const assetVersion = '4';
+  const assetVersion = '5';
   window.__agyPowertoolsWeb = { transport: 'same-origin' };
   window.__agyPowertoolsWeb.rpc = async (method, payload = {}) => {
     const response = await fetch(`${endpoint}rpc`, {
@@ -27,6 +27,18 @@
       });
       const reply = await response.json().catch(() => ({ error: '插件服务暂时不可用，请刷新页面重试。' }));
       if (response.status === 401) reply.error = '网页登录已过期，请重新登录后刷新。';
+      if (request.method === 'update.install' && !reply.error) {
+        window.__agyPowertoolsWeb.updateInstalling = true;
+        sessionStorage.setItem('agy-plugin-web-update-version', reply.version);
+      }
+      if (request.method === 'update.status') {
+        if (window.__agyPowertoolsWeb.updateInstalling && reply.status === 'completed') {
+          window.__agyPowertoolsWeb.updateInstalling = false;
+          sessionStorage.removeItem('agy-plugin-web-update-version');
+          location.reload();
+        }
+        if (['failed', 'rolled-back'].includes(reply.status)) window.__agyPowertoolsWeb.updateInstalling = false;
+      }
       window.__agyPowertoolsReceive?.(request.id, reply);
     } catch {
       if (request) window.__agyPowertoolsReceive?.(request.id, { error: '插件连接失败，请稍后刷新页面。' });
@@ -77,6 +89,23 @@
   `;
   document.head.append(accountStyle);
   const updateControls = () => {
+    const installButton = document.querySelector('[data-testid="agy-install-update"]');
+    if (installButton && !installButton.dataset.webConfirmed) {
+      installButton.dataset.webConfirmed = '1';
+      installButton.addEventListener('click', event => {
+        if (!window.confirm('更新 Powertools 插件？\n将校验新版、备份旧版并验证网页兼容性。失败会回滚，只重启插件桥接，不重启 Antigravity 或切换账号。')) {
+          event.preventDefault(); event.stopPropagation();
+        }
+      }, true);
+    }
+    const updateRow = document.querySelector('[data-testid="agy-setting-row-updates"]');
+    if (updateRow && !document.querySelector('[data-agy-plugin-update-notice]')) {
+      const notice = document.createElement('p');
+      notice.dataset.agyPluginUpdateNotice = '';
+      notice.textContent = '插件更新将校验、备份并验证网页兼容性；失败自动回滚。不会重启 Antigravity 核心，账号和设置保留。';
+      notice.style.cssText = 'font-size:12px;line-height:1.6;opacity:.65;margin:8px 12px';
+      updateRow.after(notice);
+    }
     for (const key of restricted) {
       const control = document.querySelector(`[data-testid="agy-setting-${key}"]`);
       if (control && !control.disabled) {
@@ -133,4 +162,24 @@
   const timer = setInterval(load, 250);
   load();
   setTimeout(() => clearInterval(timer), 30000);
+  // Resume monitoring after a tab refresh or a temporary bridge restart.
+  let updatePending = false;
+  const monitor = async () => {
+    if (updatePending) return;
+    updatePending = true;
+    try {
+      const result = await window.__agyPowertoolsWeb.rpc('update.status');
+      if (['preparing', 'downloading', 'verifying', 'installing'].includes(result.status)) {
+        sessionStorage.setItem('agy-plugin-web-update-version', result.version);
+      } else if (result.status === 'completed' && sessionStorage.getItem('agy-plugin-web-update-version') === result.version) {
+        sessionStorage.removeItem('agy-plugin-web-update-version');
+        location.reload();
+      } else if (['failed', 'rolled-back'].includes(result.status)) {
+        sessionStorage.removeItem('agy-plugin-web-update-version');
+      }
+    } catch { /* Retry when the bridge is back online. */ }
+    finally { updatePending = false; }
+  };
+  setInterval(monitor, 3000);
+  void monitor();
 })();

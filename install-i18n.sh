@@ -57,6 +57,7 @@ if [[ "${WITH_POWERTOOLS}" != "0" && -d "${HOME}/.gemini/config/plugins/agy-powe
     info "安装 Powertools 网页桥接"
     install -d -m 0755 "${PREFIX}/powertools"
     install -m 0644 "${SRC}/powertools/"*.mjs "${SRC}/powertools/"*.js "${PREFIX}/powertools/"
+    install -m 0644 "${SRC}/powertools/"package*.json "${PREFIX}/powertools/"
     install -d -m 0700 /etc/agy-powertools
     install -d -m 0700 "${HOME}/.local/share/agy-accounts/powertools-web"
     # Keep bridge settings outside plugin_data, which is managed by Antigravity.
@@ -80,13 +81,18 @@ if [[ "${WITH_POWERTOOLS}" != "0" && -d "${HOME}/.gemini/config/plugins/agy-powe
         -e "s|__PREFIX__|${PREFIX}|g" \
         -e "s|__HOME__|${HOME}|g" \
         "${SRC}/deploy/agy-powertools-web.service" > /etc/systemd/system/agy-powertools-web.service
+    if [[ -d "${PREFIX}/powertools/node_modules/playwright" ]]; then
+      install -d -m 0700 "${HOME}/.local/share/agy-accounts/powertools-updates"
+      sed -e "s|__NODE__|${POWERTOOLS_NODE}|g" -e "s|__PREFIX__|${PREFIX}|g" -e "s|__HOME__|${HOME}|g" \
+        "${SRC}/deploy/agy-powertools-update.service" > /etc/systemd/system/agy-powertools-update.service
+    fi
     systemctl daemon-reload
     systemctl enable agy-powertools-web >/dev/null 2>&1 || true
     systemctl restart agy-powertools-web
     sleep 1
     if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${POWERTOOLS_PORT}/healthz', timeout=3)" >/dev/null 2>&1; then
       ok "Powertools 网页桥接已启动（127.0.0.1:${POWERTOOLS_PORT}）"
-      POWERTOOLS_SCRIPT='<script src="/__agy-powertools/bootstrap.js?v=4" defer></script>'
+      POWERTOOLS_SCRIPT='<script src="/__agy-powertools/bootstrap.js?v=5" defer></script>'
     else
       warn "Powertools 网页桥接未就绪，查看 journalctl -u agy-powertools-web；原网页仍可正常使用"
     fi

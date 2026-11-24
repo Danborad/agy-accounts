@@ -65,7 +65,7 @@ test('账号客户端仅访问本机专用接口，不向浏览器提供凭据',
 
 test('桥接认证、Origin 校验和 RPC 白名单', async t => {
     const calls = [];
-    const accountClient = async (action, payload) => { calls.push({ action, payload }); return { ok: true }; };
+    const accountClient = async (action, payload) => { calls.push({ action, payload }); return { ok: true, canUpdate: true }; };
     const server = createBridge({ plugin: fixture(), secret, scriptSource: '/* test */', accountClient });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -85,7 +85,7 @@ test('桥接认证、Origin 校验和 RPC 白名单', async t => {
     assert.equal((await (await rpc('settings.get')).json()).multiAccount, false);
     assert.equal((await (await rpc('settings.set', { settings: { compact: false } })).json()).compact, false);
     assert.equal((await rpc('settings.set', { settings: { multiAccount: true } })).status, 400);
-    for (const method of ['accounts.switch', 'proxy.relaunch', 'file.open', 'update.install']) {
+    for (const method of ['accounts.switch', 'proxy.relaunch', 'file.open']) {
         assert.equal((await rpc(method)).status, 400);
     }
     assert.equal((await rpc('serverAccounts.list')).status, 200);
@@ -107,7 +107,10 @@ test('桥接认证、Origin 校验和 RPC 白名单', async t => {
     assert.equal((await rpc('serverAccounts.alias', { accountId: '../x', alias: 'a' })).status, 400);
     assert.equal((await rpc('state', { conversationId: '../../etc/passwd' })).status, 400);
     assert.equal((await rpc('subagents.stats', { conversationIds: Array(33).fill('id') })).status, 400);
-    assert.equal((await (await rpc('update.check')).json()).canInstall, false);
+    assert.equal((await (await rpc('update.check')).json()).canInstall, true);
+    assert.equal((await rpc('update.install', { version: '2.14.3' })).status, 200);
+    assert.deepEqual(calls.at(-1), { action: 'plugin_update_start', payload: { version: '2.14.3' } });
+    assert.equal((await rpc('update.install', { version: '../shell' })).status, 400);
     assert.equal((await rpc('dashboard')).status, 200);
     const invalid = await fetch(`${base}/rpc`, { method: 'POST', headers, body: 'not-json' });
     assert.equal(invalid.status, 400);

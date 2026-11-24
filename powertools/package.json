@@ -1,0 +1,8 @@
+{
+  "name": "agy-powertools-web-validator",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

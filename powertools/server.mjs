@@ -37,6 +37,23 @@ export function validateSettings(patch) {
   }
 }
 
+export function adaptPluginSource(source, settings) {
+  const sentinel = 'https://agy-powertools.invalid';
+  if (!source.includes(`location.origin===${JSON.stringify(sentinel)}`)) throw Error('插件来源检查结构不兼容');
+  source = source.replace(`location.origin===${JSON.stringify(sentinel)}`, 'Boolean(globalThis.__agyPowertoolsWeb)');
+  source = source.replace(/^globalThis\.__agyInitialSettings=.*;$/m,
+    `globalThis.__agyInitialSettings=${JSON.stringify(webSettings(settings))};`);
+  source = adaptNativeBindings(localizeStagePrompt(source));
+  const slot = "tab==='quota'?h(Quotas)";
+  if (!source.includes(slot) || !source.includes("['quota',opts.multiAccount?") || !source.includes('        h(About),')) {
+    throw Error('插件账号页结构不兼容，停止注入');
+  }
+  source = source.replace(slot, "tab==='quota'?h(globalThis.__agyWebAccountsPanel)");
+  source = source.replace("['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):'额度']", "['quota','账号与额度']");
+  return source.replace('        h(About),',
+    '        h(globalThis.__agyWebAccountsPanel),h(globalThis.__agyWebCoreUpdate),h(About),');
+}
+
 export function managedHub(home, service = 'agy-server') {
   const unit = service.endsWith('.service') ? service : `${service}.service`;
   const dir = join(home, '.gemini', 'antigravity', 'daemon');
@@ -87,20 +104,7 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
       const bundle = await plugin.cache.readLocalBundle(`https://127.0.0.1:${hub.httpsPort}`);
       const names = plugin.cache.declaredNativeNames(bundle.source);
       if (!names.length) throw Error('未找到网页组件');
-      const sentinel = 'https://agy-powertools.invalid';
-      let source = plugin.native.nativeSource(sentinel, names);
-      source = source.replace(`location.origin===${JSON.stringify(sentinel)}`, 'Boolean(globalThis.__agyPowertoolsWeb)');
-      source = source.replace(/^globalThis\.__agyInitialSettings=.*;$/m,
-        `globalThis.__agyInitialSettings=${JSON.stringify(webSettings(plugin.store.get()))};`);
-      source = localizeStagePrompt(source);
-      source = adaptNativeBindings(source);
-      const slot = "tab==='quota'?h(Quotas)";
-      if (!source.includes(slot) || !source.includes("['quota',opts.multiAccount?")
-          || !source.includes('        h(About),')) throw Error('插件账号页结构不兼容，停止注入');
-      source = source.replace(slot, "tab==='quota'?h(globalThis.__agyWebAccountsPanel)");
-      source = source.replace("['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):'额度']", "['quota','账号与额度']");
-      source = source.replace('        h(About),',
-        '        h(globalThis.__agyWebAccountsPanel),h(globalThis.__agyWebCoreUpdate),h(About),');
+      const source = adaptPluginSource(plugin.native.nativeSource('https://agy-powertools.invalid', names), plugin.store.get());
       cachedUi = { key, source };
       return source;
     })();
@@ -111,7 +115,7 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
         || !Number.isSafeInteger(request.id) || request.id <= 0 || typeof request.method !== 'string') throw Error('请求格式无效');
     const current = webSettings(plugin.store.get());
     if (!current.enabled && !request.method.startsWith('serverAccounts.') && !request.method.startsWith('coreUpdate.')
-        && !['settings.get', 'settings.set', 'update.check', 'update.status'].includes(request.method)) {
+        && !['settings.get', 'settings.set', 'update.check', 'update.status', 'update.install'].includes(request.method)) {
       throw Error('Powertools 已关闭');
     }
     switch (request.method) {
@@ -172,11 +176,16 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
           { knownAccountCount: 2 }); // Do not attribute old requests to the current account.
       case 'pricing.refresh': return plugin.pricing.refresh();
       case 'proxy.status': return { configured: false, active: false, mismatch: false, canRelaunch: false, managedByPowertools: false };
-      case 'update.status': return { status: 'idle', managedBy: 'web-adapter' };
+      case 'update.status':
+        return accountClient ? accountClient('plugin_update_status') : { status: 'idle', managedBy: 'web-adapter' };
       case 'update.check': {
         const result = await plugin.updates.checkForUpdates({ currentVersion: plugin.version });
-        return { ...result, canInstall: false, asset: undefined };
+        const capability = accountClient ? await accountClient('plugin_update_status') : {};
+        return { ...result, canInstall: result.canInstall && capability.canUpdate === true, asset: undefined };
       }
+      case 'update.install':
+        if (!accountClient || !/^\d+\.\d+\.\d+$/.test(request.version || '')) throw Error('插件更新版本无效');
+        return accountClient('plugin_update_start', { version: request.version });
       default: throw Error('网页版暂不支持此桌面操作；切号请使用内置账号页。');
     }
   };

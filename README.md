@@ -119,7 +119,7 @@ Antigravity 在机器上的状态分三层：
 - 只读访问 `~/.gemini/antigravity`，网页桥接设置写入独立持久目录 `~/.local/share/agy-accounts/powertools-web`，不依赖 Antigravity 管理的插件数据目录
 - 内置账号页只显示已有账号额度并提供切换，不新增、删除账号，也不启用插件的桌面切号或自动切号系统
 - 网页设置页隐藏原插件的桌面多账号、网络代理和文件右键菜单入口；服务端切号直接在内置账号页执行，无需另开 8790。8790 后端和旧页面保留作为兼容入口
-- 不提供代理、文件右键菜单和插件自更新，继续使用主机配置
+- 不提供代理、文件右键菜单；插件使用独立网页版更新服务，不使用桌面自更新流程
 - 费用是 API 参考估算，不是订阅账单
 - 桥接只监听 `127.0.0.1:8791`，由 Nginx 复用 8766 的登录会话；通过独立主机密钥调用 8790 专用账号接口，不把后端令牌或密钥交给浏览器，也不开放浏览器调试端口
 - 需要 Node.js 22.13+；脚本会用 `NODE_BIN` 或 `/opt/node22/bin/node` 自动查找，找不到时只保留汉化
@@ -131,6 +131,24 @@ AGY_POWERTOOLS=0 ./install-i18n.sh
 ```
 
 重新启用：不带 `AGY_POWERTOOLS=0` 重新运行脚本即可。
+
+### 网页版插件更新
+
+在 **Powertools → 设置 → 关于 → 检查更新** 发现新版后，可点击「立即更新」。更新会校验官方包、备份旧版、只读验证网页兼容性；失败自动回滚。账号快照与网页设置不动，Antigravity 核心不重启。
+
+首次启用需要安装独立浏览器验证依赖（Node.js 22.13+），随后重新运行 `install-i18n.sh` 注册更新服务：
+
+```bash
+cd /opt/agy-accounts/powertools
+export PATH=/opt/node22/bin:$PATH
+npm ci --ignore-scripts --no-audit --no-fund
+npx playwright install --with-deps chromium --only-shell
+# 完成后回到源码仓库根目录，以 root 运行 install-i18n.sh：
+cd /你的源码目录/agy-accounts
+./install-i18n.sh
+```
+
+更新失败可查看 `journalctl -u agy-powertools-update`。旧版备份位于 `~/.gemini/config/plugins/.agy-powertools-web-updates/`；状态位于 `~/.local/share/agy-accounts/powertools-updates/state.json`。备份不是账号令牌，请勿手动删除尚未确认恢复的备份。
 
 ## 系统架构
 

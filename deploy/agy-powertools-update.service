@@ -1,0 +1,18 @@
+[Unit]
+Description=Verified Powertools web plugin update worker
+After=agy-accounts.service
+
+[Service]
+Type=oneshot
+User=root
+Environment=HOME=__HOME__
+Environment=NODE_NO_WARNINGS=1
+ExecStart=__NODE__ __PREFIX__/powertools/update-worker.mjs
+TimeoutStartSec=300
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__HOME__/.gemini/config/plugins __HOME__/.gemini/antigravity/plugin_data/agy-powertools __HOME__/.local/share/agy-accounts
+UMask=0077
+MemoryMax=1G

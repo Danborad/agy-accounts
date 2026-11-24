@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.10.2"
+VERSION = "1.10.3"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -2420,6 +2420,13 @@ class PanelHandler(BaseHTTPRequestHandler):
             if action == "core_update_check":
                 self.app.check_powertools_update()
             result = self.app.powertools_update()
+        elif action in ("plugin_update_status", "plugin_update_start"):
+            if action == "plugin_update_start":
+                version = body.get("version")
+                if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+                    raise ApiError(400, "插件版本无效")
+                self.app.start_plugin_update(version)
+            result = self.app.plugin_update_status()
         elif action == "refresh":
             self.app.refresh_powertools_quotas(force=True)
             result = self.app.powertools_accounts()
@@ -2715,6 +2722,64 @@ class App:
         self._pw_update_state_lock = threading.Lock()
         self._pw_update: Dict[str, Any] = {"state": "idle", "checked_at": 0}
         self._pw_update_attempt = 0.0
+        self._plugin_update_lock = threading.Lock()
+
+    def plugin_update_root(self) -> str:
+        return expand_path("~/.local/share/agy-accounts/powertools-updates")
+
+    def plugin_update_status(self) -> Dict[str, Any]:
+        state = read_json(os.path.join(self.plugin_update_root(), "state.json"))
+        if not state:
+            state = {"status": "idle"}
+        # Expose only status, never filesystem paths, service keys or package URLs.
+        state = {key: state[key] for key in ("status", "version", "message", "at") if key in state}
+        can_update = os.path.isfile("/etc/systemd/system/agy-powertools-update.service")
+        return dict(state, canUpdate=can_update)
+
+    def start_plugin_update(self, version: str) -> None:
+        if not self.plugin_update_status()["canUpdate"]:
+            raise ApiError(503, "未安装网页版插件更新服务")
+        if not self._plugin_update_lock.acquire(blocking=False):
+            raise ApiError(409, "插件更新正在进行")
+        if self.plugin_update_status().get("status") in ("preparing", "downloading", "verifying", "installing"):
+            self._plugin_update_lock.release()
+            raise ApiError(409, "插件更新尚未完成，请检查更新状态")
+        root = self.plugin_update_root()
+        # Reserve shared service-operation lock before returning to the browser.
+        operation = self.operation_lock.hold("Powertools 插件更新")
+        try:
+            operation.__enter__()
+        except Exception:
+            self._plugin_update_lock.release()
+            raise
+        try:
+            ensure_dir(root)
+            write_json_atomic(os.path.join(root, "plan.json"), {"version": version, "at": int(time.time() * 1000)})
+            write_json_atomic(os.path.join(root, "state.json"), {"status": "preparing", "version": version})
+        except Exception:
+            operation.__exit__(None, None, None)
+            self._plugin_update_lock.release()
+            raise
+
+        def update() -> None:
+            try:
+                proc = subprocess.run(["systemctl", "start", "agy-powertools-update"],
+                                      timeout=310, capture_output=True)
+                state = self.plugin_update_status()
+                if proc.returncode != 0 or state.get("status") not in ("completed", "rolled-back", "failed"):
+                    if state.get("status") not in ("rolled-back", "failed"):
+                        write_json_atomic(os.path.join(root, "state.json"), {
+                            "status": "failed", "version": version,
+                            "message": "插件更新服务未完成，请检查插件入口后重试"})
+            except Exception:
+                log.exception("插件更新服务异常")
+                write_json_atomic(os.path.join(root, "state.json"), {
+                    "status": "failed", "version": version, "message": "插件更新服务异常，请检查主机日志"})
+            finally:
+                operation.__exit__(None, None, None)
+                self._plugin_update_lock.release()
+
+        threading.Thread(target=update, daemon=True).start()
 
     def powertools_update(self) -> Dict[str, Any]:
         with self._pw_update_state_lock:
