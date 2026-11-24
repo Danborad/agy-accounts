@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.10.1"
+VERSION = "1.10.2"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -2416,6 +2416,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         action = body.get("action")
         if action == "list":
             result = self.app.powertools_accounts()
+        elif action in ("core_update_status", "core_update_check"):
+            if action == "core_update_check":
+                self.app.check_powertools_update()
+            result = self.app.powertools_update()
         elif action == "refresh":
             self.app.refresh_powertools_quotas(force=True)
             result = self.app.powertools_accounts()
@@ -2707,6 +2711,49 @@ class App:
         self._pw_job: Dict[str, Any] = {}
         self._pw_refresh_lock = threading.Lock()
         self._pw_refresh_at = 0.0
+        self._pw_update_lock = threading.Lock()
+        self._pw_update_state_lock = threading.Lock()
+        self._pw_update: Dict[str, Any] = {"state": "idle", "checked_at": 0}
+        self._pw_update_attempt = 0.0
+
+    def powertools_update(self) -> Dict[str, Any]:
+        with self._pw_update_state_lock:
+            checked = dict(self._pw_update)
+        status = update_status(self.cfg)
+        # Prefer a verified channel check over the local staged-version hint.
+        if checked.get("latest"):
+            status["latest"] = checked["latest"]
+            status["available"] = bool(status["running"] and status["latest"] != status["running"])
+        status.pop("binary", None)
+        return dict(status, check=checked)
+
+    def check_powertools_update(self) -> None:
+        """后台只查询官方版本，不下载、不重启，立即返回给网页轮询。"""
+        if not self._pw_update_lock.acquire(blocking=False):
+            return
+        if self._pw_update_attempt and time.monotonic() - self._pw_update_attempt < 30:
+            self._pw_update_lock.release()
+            raise ApiError(429, "请稍候再检查更新（30 秒内仅检查一次）")
+        self._pw_update_attempt = time.monotonic()
+        with self._pw_update_state_lock:
+            self._pw_update.update(state="checking", error="")
+
+        def check() -> None:
+            state = {"state": "failed", "error": "检查未完成，请稍后重试"}
+            try:
+                result = check_official_update(self.cfg)
+                state = {"state": "success", "latest": result["latest"], "checked_at": now(), "error": ""}
+            except ApiError as exc:
+                state = {"state": "failed", "error": exc.message}
+            except Exception:
+                log.exception("内置更新检查失败")
+                state = {"state": "failed", "error": "检查更新失败，请稍后重试"}
+            finally:
+                with self._pw_update_state_lock:
+                    self._pw_update.update(state)
+                self._pw_update_lock.release()
+
+        threading.Thread(target=check, daemon=True).start()
 
     def refresh_powertools_quotas(self, force: bool = False) -> None:
         if not self._pw_refresh_lock.acquire(blocking=False):

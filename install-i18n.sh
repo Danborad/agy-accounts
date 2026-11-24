@@ -58,7 +58,11 @@ if [[ "${WITH_POWERTOOLS}" != "0" && -d "${HOME}/.gemini/config/plugins/agy-powe
     install -d -m 0755 "${PREFIX}/powertools"
     install -m 0644 "${SRC}/powertools/"*.mjs "${SRC}/powertools/"*.js "${PREFIX}/powertools/"
     install -d -m 0700 /etc/agy-powertools
-    install -d -m 0700 "${HOME}/.gemini/antigravity/plugin_data/agy-powertools-web"
+    install -d -m 0700 "${HOME}/.local/share/agy-accounts/powertools-web"
+    # Keep bridge settings outside plugin_data, which is managed by Antigravity.
+    if [[ -d "${HOME}/.gemini/antigravity/plugin_data/agy-powertools-web" ]]; then
+      cp -an "${HOME}/.gemini/antigravity/plugin_data/agy-powertools-web/." "${HOME}/.local/share/agy-accounts/powertools-web/"
+    fi
     if [[ ! -s "${POWERTOOLS_KEY}" ]]; then
       python3 -c 'import secrets; print(secrets.token_hex(32))' > "${POWERTOOLS_KEY}"
       chmod 0600 "${POWERTOOLS_KEY}"
@@ -82,7 +86,7 @@ if [[ "${WITH_POWERTOOLS}" != "0" && -d "${HOME}/.gemini/config/plugins/agy-powe
     sleep 1
     if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${POWERTOOLS_PORT}/healthz', timeout=3)" >/dev/null 2>&1; then
       ok "Powertools 网页桥接已启动（127.0.0.1:${POWERTOOLS_PORT}）"
-      POWERTOOLS_SCRIPT='<script src="/__agy-powertools/bootstrap.js?v=3" defer></script>'
+      POWERTOOLS_SCRIPT='<script src="/__agy-powertools/bootstrap.js?v=4" defer></script>'
     else
       warn "Powertools 网页桥接未就绪，查看 journalctl -u agy-powertools-web；原网页仍可正常使用"
     fi

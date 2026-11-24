@@ -17,6 +17,12 @@ export function localizeStagePrompt(source) {
   return typeof source === 'string' ? source.replace(STAGE_PROMPT, STAGE_PROMPT_ZH) : source;
 }
 
+export function adaptNativeBindings(source) {
+  // 2.35 removed scrollContainerClassName from Popover.Content; use its stable popup marker instead.
+  return source.replace("s.includes('scrollContainerClassName:')&&s.includes('arrowNavigable:')&&s.includes('matchTriggerWidth:')",
+    "(s.includes('scrollContainerClassName:')||s.includes('data-popover-popup'))&&s.includes('arrowNavigable:')&&s.includes('matchTriggerWidth:')");
+}
+
 export function webSettings(settings) {
   return { ...settings, ...RESTRICTED };
 }
@@ -87,12 +93,14 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
       source = source.replace(/^globalThis\.__agyInitialSettings=.*;$/m,
         `globalThis.__agyInitialSettings=${JSON.stringify(webSettings(plugin.store.get()))};`);
       source = localizeStagePrompt(source);
+      source = adaptNativeBindings(source);
       const slot = "tab==='quota'?h(Quotas)";
       if (!source.includes(slot) || !source.includes("['quota',opts.multiAccount?")
           || !source.includes('        h(About),')) throw Error('插件账号页结构不兼容，停止注入');
       source = source.replace(slot, "tab==='quota'?h(globalThis.__agyWebAccountsPanel)");
       source = source.replace("['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):'额度']", "['quota','账号与额度']");
-      source = source.replace('        h(About),', '        h(globalThis.__agyWebAccountsPanel),h(About),');
+      source = source.replace('        h(About),',
+        '        h(globalThis.__agyWebAccountsPanel),h(globalThis.__agyWebCoreUpdate),h(About),');
       cachedUi = { key, source };
       return source;
     })();
@@ -102,11 +110,15 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
     if (!request || typeof request !== 'object' || Array.isArray(request)
         || !Number.isSafeInteger(request.id) || request.id <= 0 || typeof request.method !== 'string') throw Error('请求格式无效');
     const current = webSettings(plugin.store.get());
-    if (!current.enabled && !request.method.startsWith('serverAccounts.')
+    if (!current.enabled && !request.method.startsWith('serverAccounts.') && !request.method.startsWith('coreUpdate.')
         && !['settings.get', 'settings.set', 'update.check', 'update.status'].includes(request.method)) {
       throw Error('Powertools 已关闭');
     }
     switch (request.method) {
+      case 'coreUpdate.status':
+      case 'coreUpdate.check':
+        if (!accountClient) throw Error('核心更新后端未接入');
+        return accountClient(request.method === 'coreUpdate.check' ? 'core_update_check' : 'core_update_status');
       case 'serverAccounts.list':
       case 'serverAccounts.refresh':
         if (!accountClient) throw Error('账号后端未接入');
@@ -216,13 +228,14 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const home = homedir();
   const pluginDir = process.env.AGY_POWERTOOLS_DIR || join(home, '.gemini', 'config', 'plugins', 'agy-powertools');
-  const dataDir = process.env.AGY_POWERTOOLS_DATA || join(home, '.gemini', 'antigravity', 'plugin_data', 'agy-powertools-web');
+  const dataDir = process.env.AGY_POWERTOOLS_DATA || join(home, '.local', 'share', 'agy-accounts', 'powertools-web');
   const appDataDir = join(home, '.gemini', 'antigravity');
   const secret = readFileSync(process.env.AGY_POWERTOOLS_KEY || '/etc/agy-powertools/bridge.key', 'utf8').trim();
   if (!/^[a-f0-9]{64}$/.test(secret)) throw Error('桥接密钥格式无效');
   const plugin = await loadPlugin(pluginDir, dataDir, appDataDir);
   const scriptSource = readFileSync(new URL('./browser.js', import.meta.url), 'utf8');
-  const accountScript = readFileSync(new URL('./accounts.js', import.meta.url), 'utf8');
+  const accountScript = readFileSync(new URL('./accounts.js', import.meta.url), 'utf8') + '\n'
+    + readFileSync(new URL('./core-update.js', import.meta.url), 'utf8');
   const accountClient = createAccountClient({ base: process.env.AGY_ACCOUNTS_URL || 'http://127.0.0.1:8790' });
   const server = createBridge({ plugin, secret, home, service: process.env.AGY_POWERTOOLS_SERVICE || 'agy-server',
     scriptSource, accountScript, accountClient });

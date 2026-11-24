@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { test } from 'node:test';
-import { createBridge, validateSettings, webSettings, localizeStagePrompt } from '../powertools/server.mjs';
+import { createBridge, validateSettings, webSettings, localizeStagePrompt, adaptNativeBindings } from '../powertools/server.mjs';
 import { createAccountClient } from '../powertools/account-client.mjs';
 
 const secret = 'f'.repeat(64);
@@ -40,6 +40,14 @@ test('阶段汇报提示词补充中文计划要求', () => {
     assert.match(localized, /Simplified Chinese/);
     assert.match(localized, /plan item/);
     assert.equal(localizeStagePrompt('no prompt here'), 'no prompt here');
+});
+
+test('弹层绑定兼容 2.34 与 2.35，仍拒绝无关组件', () => {
+    const source = "s.includes('scrollContainerClassName:')&&s.includes('arrowNavigable:')&&s.includes('matchTriggerWidth:')";
+    const matches = new Function('s', `return ${adaptNativeBindings(source)}`);
+    assert.equal(matches('scrollContainerClassName: arrowNavigable: matchTriggerWidth:'), true);
+    assert.equal(matches('data-popover-popup arrowNavigable: matchTriggerWidth:'), true);
+    assert.equal(matches('arrowNavigable: matchTriggerWidth:'), false);
 });
 
 test('账号客户端仅访问本机专用接口，不向浏览器提供凭据', async () => {
@@ -82,6 +90,13 @@ test('桥接认证、Origin 校验和 RPC 白名单', async t => {
     }
     assert.equal((await rpc('serverAccounts.list')).status, 200);
     assert.equal(calls[0].action, 'list');
+    assert.equal((await rpc('coreUpdate.status')).status, 200);
+    assert.equal(calls.at(-1).action, 'core_update_status');
+    assert.equal((await rpc('coreUpdate.check')).status, 200);
+    assert.equal(calls.at(-1).action, 'core_update_check');
+    const count = calls.length;
+    assert.equal((await rpc('coreUpdate.apply')).status, 400);
+    assert.equal(calls.length, count);
     assert.equal((await rpc('serverAccounts.switch', { accountId: 'a' })).status, 400);
     assert.equal((await rpc('serverAccounts.switch', { accountId: '../../etc/passwd', confirmed: true, expectedCurrentId: '' })).status, 400);
     assert.equal((await rpc('serverAccounts.switch', { accountId: '主账号', confirmed: true, expectedCurrentId: 'previous' })).status, 200);

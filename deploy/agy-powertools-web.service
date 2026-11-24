@@ -6,6 +6,7 @@ After=network-online.target agy-server.service
 Type=simple
 User=root
 Environment=HOME=__HOME__
+Environment=AGY_POWERTOOLS_DATA=__HOME__/.local/share/agy-accounts/powertools-web
 Environment=NODE_NO_WARNINGS=1
 Environment=NODE_USE_ENV_PROXY=1
 ExecStart=__NODE__ __PREFIX__/powertools/server.mjs
@@ -15,7 +16,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=__HOME__/.gemini/antigravity/plugin_data/agy-powertools-web
+ReadWritePaths=__HOME__/.local/share/agy-accounts/powertools-web
 UMask=0077
 MemoryMax=384M
 

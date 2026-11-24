@@ -661,6 +661,43 @@ class PanelTest(unittest.TestCase):
         status, data, _ = self.request("POST", "/api/update", {"action": "unknown"})
         self.assertEqual(status, 400)
 
+    def test_core_check_background_deduplicates_and_never_applies_update(self):
+        started = threading.Event()
+        finish = threading.Event()
+        def check(_cfg):
+            started.set()
+            self.assertTrue(finish.wait(timeout=5))
+            return {"latest": "2.35.0"}
+
+        with mock.patch.object(agy_accounts, "check_official_update", side_effect=check) as official, \
+                mock.patch.object(agy_accounts, "running_language_server_version", return_value="2.34.0"), \
+                mock.patch.object(agy_accounts, "apply_language_server_update") as apply:
+            self.app.check_powertools_update()
+            self.assertTrue(started.wait(timeout=5))
+            self.app.check_powertools_update()
+            self.assertEqual(self.app.powertools_update()["check"]["state"], "checking")
+            finish.set()
+            self.assertTrue(self.app._pw_update_lock.acquire(timeout=5))
+            self.app._pw_update_lock.release()
+            result = self.app.powertools_update()
+            self.assertEqual(result["check"]["state"], "success")
+            self.assertEqual(result["latest"], "2.35.0")
+            self.assertTrue(result["available"])
+            self.assertGreater(result["check"]["checked_at"], 0)
+            with self.assertRaises(agy_accounts.ApiError) as caught:
+                self.app.check_powertools_update()
+            self.assertEqual(caught.exception.status, 429)
+            official.assert_called_once()
+            apply.assert_not_called()
+
+    def test_core_check_failure_not_reported_as_up_to_date(self):
+        with mock.patch.object(agy_accounts, "check_official_update", side_effect=agy_accounts.ApiError(502, "网络超时")), \
+                mock.patch.object(agy_accounts, "running_language_server_version", return_value="2.34.0"):
+            self.app.check_powertools_update()
+            self.assertTrue(self.app._pw_update_lock.acquire(timeout=5))
+            self.app._pw_update_lock.release()
+            self.assertEqual(self.app.powertools_update()["check"], {"state": "failed", "checked_at": 0, "error": "网络超时"})
+
     def test_update_rejects_read_only_sandbox_before_downloading(self):
         self.login()
         with mock.patch.object(agy_accounts, "running_language_server_version", return_value="2.30.0"), \
@@ -737,6 +774,13 @@ class PanelTest(unittest.TestCase):
                 self.assertEqual(internal({"action": "delete", "accountId": account["id"]})[0], 400)
                 self.assertEqual(internal({}, "/api/password")[0], 400)
                 self.assertEqual(internal({"action": "switch", "accountId": account["id"]})[0], 400)
+                with mock.patch.object(self.app, "powertools_update", return_value={"running": "2.34.0"}), \
+                        mock.patch.object(self.app, "check_powertools_update") as check:
+                    self.assertEqual(internal({"action": "core_update_status"})[0], 200)
+                    check.assert_not_called()
+                    self.assertEqual(internal({"action": "core_update_check"})[0], 200)
+                    check.assert_called_once()
+                    self.assertEqual(internal({"action": "core_update_apply"})[0], 400)
 
     def test_background_switch_uses_shared_lock_and_reports_verification_result(self):
         self.write_token('{"access_token":"candidate"}')
