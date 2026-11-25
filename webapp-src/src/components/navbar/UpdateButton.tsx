@@ -1,13 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Download, Loader2 } from 'lucide-react';
 import { request } from '../../utils/request';
+import { publishUpdateStatus, subscribeUpdateStatus, type UpdateStatusInfo } from '../../utils/updateStatus';
 import { showToast } from '../common/ToastContainer';
 
-interface UpdateInfo {
-    running?: string;
-    latest?: string;
-    available?: boolean;
-}
+type UpdateInfo = UpdateStatusInfo;
 
 export default function UpdateButton() {
     const [info, setInfo] = useState<UpdateInfo | null>(null);
@@ -15,16 +12,29 @@ export default function UpdateButton() {
 
     useEffect(() => {
         let alive = true;
+        const show = (data: UpdateInfo) => {
+            if (alive) setInfo(data);
+        };
         const load = () => {
             request<UpdateInfo>('get_update')
-                .then(data => { if (alive) setInfo(data); })
+                .then(show)
                 .catch(() => {});
         };
         load();
-        const timer = window.setInterval(load, 10 * 60 * 1000);
+        const timer = window.setInterval(load, 60 * 1000);
+        const refresh = () => load();
+        const refreshVisible = () => {
+            if (document.visibilityState === 'visible') load();
+        };
+        const unsubscribe = subscribeUpdateStatus(show);
+        window.addEventListener('focus', refresh);
+        document.addEventListener('visibilitychange', refreshVisible);
         return () => {
             alive = false;
             window.clearInterval(timer);
+            unsubscribe();
+            window.removeEventListener('focus', refresh);
+            document.removeEventListener('visibilitychange', refreshVisible);
         };
     }, []);
 
@@ -41,7 +51,9 @@ export default function UpdateButton() {
         try {
             const result = await request<UpdateInfo & { message?: string }>('apply_update');
             showToast(`已更新到 ${result.running || info.latest}，Antigravity 会自动重连`, 'success');
-            setInfo({ ...info, running: result.running, latest: result.latest, available: false });
+            const updated = { ...info, running: result.running, latest: result.latest, available: false };
+            setInfo(updated);
+            publishUpdateStatus(updated);
             window.setTimeout(() => window.location.reload(), 1800);
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);

@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.10.5"
+VERSION = "1.10.6"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -2108,6 +2108,21 @@ def staged_language_server_version() -> str:
     return str(data.get("staged_version") or "")
 
 
+def version_key(value: str) -> Tuple[int, ...]:
+    parts = [int(item) for item in re.findall(r"\d+", str(value or ""))[:4]]
+    while parts and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+def version_is_newer(candidate: str, current: str) -> bool:
+    """只有确切的更高版本才算更新，避免旧检查结果提示“升级”到更旧版本。"""
+    left, right = version_key(candidate), version_key(current)
+    if not left or not right:
+        return bool(candidate and current and str(candidate) != str(current))
+    return left > right
+
+
 def update_status(cfg: Dict[str, Any]) -> Dict[str, Any]:
     running = running_language_server_version(cfg)
     staged = staged_language_server_version()
@@ -2116,7 +2131,7 @@ def update_status(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "running": running,
         "latest": latest,
         "staged": staged,
-        "available": bool(staged and running and staged != running),
+        "available": bool(staged and running and version_is_newer(staged, running)),
         "binary": "/usr/local/bin/agy-server",
     }
 
@@ -2146,7 +2161,7 @@ def check_official_update(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "running": running,
         "latest": latest,
         "staged": staged_language_server_version(),
-        "available": bool(running and latest != running),
+        "available": bool(running and version_is_newer(latest, running)),
         "output": output[-1200:],
     }
 
@@ -3158,7 +3173,8 @@ class App:
         # Prefer a verified channel check over the local staged-version hint.
         if checked.get("latest"):
             status["latest"] = checked["latest"]
-            status["available"] = bool(status["running"] and status["latest"] != status["running"])
+            status["available"] = bool(status["running"]
+                                       and version_is_newer(status["latest"], status["running"]))
         status.pop("binary", None)
         return dict(status, check=checked, update=self.core_update_job(), canApply=self.core_update_enabled())
 

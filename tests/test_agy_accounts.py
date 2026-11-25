@@ -912,6 +912,34 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(len(result["quotas"]), 1)
 
 
+    def test_version_compare_only_reports_strictly_newer_versions(self):
+        for candidate, current, expected in (
+                ("2.35.1", "2.35.0", True),
+                ("2.36.0", "2.35.9", True),
+                ("2.35.1", "2.35.1", False),
+                ("2.35.0", "2.35.1", False),
+                ("2.35.1.0", "2.35.1", False)):
+            with self.subTest(candidate=candidate, current=current):
+                self.assertEqual(agy_accounts.version_is_newer(candidate, current), expected)
+
+    def test_stale_update_results_never_prompt_downgrade_or_keep_badge(self):
+        with mock.patch.object(agy_accounts, "running_language_server_version", return_value="2.35.1"), \
+                mock.patch.object(agy_accounts, "staged_language_server_version", return_value="2.35.0"):
+            self.assertFalse(agy_accounts.update_status(self.loaded)["available"])
+        with mock.patch.object(agy_accounts, "running_language_server_version", return_value="2.35.1"), \
+                mock.patch.object(agy_accounts, "staged_language_server_version", return_value="2.35.2"):
+            self.assertTrue(agy_accounts.update_status(self.loaded)["available"])
+
+        with mock.patch.object(agy_accounts, "running_language_server_version", return_value="2.35.1"), \
+                mock.patch.object(agy_accounts, "staged_language_server_version", return_value=""):
+            with self.app._pw_update_state_lock:
+                self.app._pw_update = {"state": "success", "latest": "2.35.0", "checked_at": 1}
+            info = self.app.powertools_update()
+            self.assertFalse(info["available"])
+            with self.app._pw_update_state_lock:
+                self.app._pw_update = {"state": "success", "latest": "2.35.2", "checked_at": 1}
+            self.assertTrue(self.app.powertools_update()["available"])
+
     # -- 网页版新增账号 --------------------------------------------------
 
     @staticmethod

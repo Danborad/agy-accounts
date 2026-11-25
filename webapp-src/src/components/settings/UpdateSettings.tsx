@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 import { request } from '../../utils/request';
 import { showToast } from '../common/ToastContainer';
+import { publishUpdateStatus } from '../../utils/updateStatus';
 
 interface UpdateInfo {
     running?: string;
@@ -16,7 +17,7 @@ export default function UpdateSettings() {
 
     const load = () => {
         request<UpdateInfo>('get_update')
-            .then(setInfo)
+            .then(data => { setInfo(data); publishUpdateStatus(data); })
             .catch(() => {});
     };
 
@@ -30,6 +31,7 @@ export default function UpdateSettings() {
         try {
             const result = await request<UpdateInfo>('check_update');
             setInfo(result);
+            publishUpdateStatus(result);
             if (!result.running) {
                 showToast('未能读取受管服务的运行版本，无法判断是否需要更新', 'error');
             } else {
@@ -55,6 +57,7 @@ export default function UpdateSettings() {
         try {
             const result = await request<UpdateInfo & { message?: string }>('apply_update');
             setInfo(result);
+            publishUpdateStatus(result);
             showToast(`${result.message || '已更新'}：${result.running || result.latest || ''}`, 'success');
         } catch (error) {
             showToast(`更新失败：${error instanceof Error ? error.message : String(error)}`, 'error');
