@@ -219,8 +219,19 @@
       "title": "添加新账号",
       "tabs": {
         "oauth": "OAuth 授权",
+        "login_guide": "登录新账号",
         "token": "Refresh Token",
         "import": "从本机导入"
+      },
+      "web_mode_hint": "网页版不会在浏览器打开 Google 授权；请使用下方令牌或文件导入。",
+      "web_login": {
+        "title": "网页版登录新账号",
+        "desc": "网页面板不托管 Google 授权。新账号先在 Antigravity 页面完成登录，再回到这里导入令牌。",
+        "step1": "先点「保存当前登录」，把正在使用的账号保存为快照。",
+        "step2": "打开 Antigravity，退出当前账号并用新账号完成 Google 登录。",
+        "step3": "回到这里点「扫描并导入本机账号」；也可以直接粘贴 Refresh Token 或选择导出文件。",
+        "open": "打开 Antigravity 登录",
+        "note": "浏览器不接触 Google 授权码；令牌由本机服务校验并保存。"
       },
       "oauth": {
         "recommend": "推荐方式",
@@ -259,6 +270,8 @@
         "file_title": "从账号导出或数据库文件导入",
         "file_desc": "选择 Switch 导出的 JSON 文件，或 Antigravity 的 state.vscdb 文件。部分导入失败时会保留结果供检查。",
         "file_btn": "选择文件…",
+        "file_too_large": "文件超过 10 MB，请改用 Refresh Token 导入。",
+        "duplicate_only": "这些账号已经保存过了，无需重复导入。",
         "summary": "已导入 {{success}} 个账号，{{failed}} 个来源需要检查",
         "failure_hint": "失败来源请检查登录状态、数据库路径及系统代理；失效凭据需重新登录。",
         "status_imported": "已导入",

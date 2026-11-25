@@ -912,6 +912,121 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(len(result["quotas"]), 1)
 
 
+    # -- 网页版新增账号 --------------------------------------------------
+
+    @staticmethod
+    def refreshed(raw, email):
+        obj = json.loads(raw.decode("utf-8"))
+        obj["token"].update({"access_token": "ya29.test", "email": email})
+        return json.dumps(obj).encode("utf-8")
+
+    def test_web_import_token_saves_verified_snapshot_and_duplicate(self):
+        self.login()
+        refresh = "1//refresh-token-for-web-import"
+        with mock.patch.object(self.app.quota, "refresh_snapshot",
+                               side_effect=lambda raw, path: self.refreshed(raw, "web@example.com")):
+            status, data, _ = self.request("POST", "/api/accounts/import-token", {
+                "refreshToken": refresh, "name": "网页导入",
+            })
+            self.assertEqual(status, 200, data)
+            self.assertTrue(data["created"])
+            self.assertEqual(data["account"]["name"], "网页导入")
+            self.assertEqual(data["account"]["email"], "web@example.com")
+
+            status, data, _ = self.request("POST", "/api/accounts/import-token", {
+                "refreshToken": refresh, "name": "另一个名字",
+            })
+        self.assertEqual(status, 200, data)
+        self.assertFalse(data["created"])
+        self.assertTrue(data["duplicate"])
+        self.assertEqual(len(self.app.status_payload()["accounts"]), 1)
+        with open(os.path.join(self.accounts_dir, data["account"]["id"], "token"), "rb") as fh:
+            self.assertEqual(agy_accounts.refresh_token_of(fh.read()), refresh)
+
+        status, data, _ = self.request("POST", "/api/accounts/import-token", {
+            "refreshToken": "not-a-refresh-token",
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("1//", data["error"])
+
+    def test_web_import_token_rolls_back_when_google_rejects(self):
+        self.login()
+        with mock.patch.object(self.app.quota, "refresh_snapshot",
+                               side_effect=agy_accounts.QuotaError("该账号的登录已失效")):
+            status, data, _ = self.request("POST", "/api/accounts/import-token", {
+                "refreshToken": "1//expired-refresh-token",
+            })
+        self.assertEqual(status, 400)
+        self.assertIn("无法验证", data["error"])
+        self.assertEqual(self.app.status_payload()["accounts"], [])
+
+    def test_web_import_file_accepts_json_export_and_vscdb(self):
+        self.login()
+        export = {"schema_version": 2, "accounts": [{
+            "email": "export@example.com", "name": "导出账号",
+            "refresh_token": "1//json-export-refresh-token",
+        }]}
+        encoded = base64.b64encode(json.dumps(export).encode("utf-8")).decode("ascii")
+        with mock.patch.object(self.app.quota, "refresh_snapshot",
+                               side_effect=lambda raw, path: self.refreshed(raw, "export@example.com")):
+            status, data, _ = self.request("POST", "/api/accounts/import-file", {
+                "filename": "agy-export.json", "data": encoded,
+            })
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["imported"], 1)
+        self.assertEqual(data["sources"][0]["source"], "agy-export.json")
+
+        database = os.path.join(self.tmp, "state.vscdb")
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute("CREATE TABLE ItemTable (key TEXT, value BLOB)")
+            connection.execute("INSERT INTO ItemTable VALUES (?, ?)", (
+                "antigravity.auth",
+                json.dumps({"token": {"refresh_token": "1//vscdb-refresh-token",
+                                      "email": "db@example.com"}}).encode("utf-8")))
+            connection.commit()
+        finally:
+            connection.close()
+        with open(database, "rb") as fh:
+            encoded = base64.b64encode(fh.read()).decode("ascii")
+        with mock.patch.object(self.app.quota, "refresh_snapshot",
+                               side_effect=lambda raw, path: self.refreshed(raw, "db@example.com")):
+            status, data, _ = self.request("POST", "/api/accounts/import-file", {
+                "filename": "state.vscdb", "data": encoded,
+            })
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["imported"], 1)
+        ids = {account["email"] for account in self.app.status_payload()["accounts"]}
+        self.assertEqual(ids, {"export@example.com", "db@example.com"})
+
+    def test_web_import_file_rejects_unknown_content(self):
+        self.login()
+        encoded = base64.b64encode(b"nothing useful here").decode("ascii")
+        status, data, _ = self.request("POST", "/api/accounts/import-file", {
+            "filename": "notes.txt", "data": encoded,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("没有找到", data["error"])
+
+    def test_web_scan_imports_current_antigravity_login_once(self):
+        self.login()
+        self.write_token(json.dumps({
+            "token": {"refresh_token": "1//current-live-refresh-token",
+                      "email": "live@example.com"},
+        }))
+        with mock.patch.object(self.app.quota, "refresh_snapshot",
+                               side_effect=lambda raw, path: self.refreshed(raw, "live@example.com")):
+            status, data, _ = self.request("POST", "/api/accounts/scan", {})
+            self.assertEqual(status, 200, data)
+            self.assertEqual(data["imported"], 1)
+            self.assertEqual(data["sources"][0]["source"], "当前 Antigravity 登录")
+            status, data, _ = self.request("POST", "/api/accounts/scan", {})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["imported"], 0)
+        self.assertEqual(data["duplicate"], 1)
+        self.assertFalse(data["failed"])
+
+
 class UsagePerformanceTest(unittest.TestCase):
     @staticmethod
     def varint(value):

@@ -85,6 +85,8 @@ Antigravity 在机器上的状态分三层：
 - 本地 Token 用量监控：今日 / 昨日 / 3 / 7 / 30 天、24 小时趋势、按模型统计
 - 首页 1–3 张卡片单排，4 张及以上均分两排，每排铺满；首字延迟与正文速度只读统计近 7 天最近 10 条有效回复的中位数，不发送额外模型请求，没有样本时显示「—」
 - 保存当前登录为命名快照（右下角工具栏，自动识别邮箱）
+- 网页版「添加新账号」支持 Refresh Token、JSON 导出和 `state.vscdb` 文件导入，也能扫描当前 Antigravity / IDE 登录；服务端校验令牌后才保存，重复账号自动跳过
+- 网页版不托管 Google 授权：「登录新账号」页会引导先在 Antigravity 完成登录，再回来扫描或导入，避免把桌面 OAuth 按钮误当成可用入口
 - 一键切换：停止 → 替换 → 启动 → 验证登录。失败或不能确认时回滚；切换、自动恢复和更新重启共用操作锁
 - 当前账号被 Google 判定不可用 / 需要验证时，自动尝试其它已保存账号（默认开启，可在设置页关闭）；连续三次读取登录状态失败时，仅尝试重启服务，不换账号
 - Antigravity 更新提醒：可检查官方版本；只有更新目录可写且重启后确认目标版本时，才报告更新成功。部署使用默认只读沙箱时，请由管理员在主机上更新
@@ -369,6 +371,9 @@ python3 agy_accounts.py --version
 | `GET` | `/api/update` | 查询当前与待应用的 Antigravity 版本 |
 | `POST` | `/api/update` | `{"action":"check"}` 检查官方更新；`{"action":"apply"}` 更新并重启 |
 | `POST` | `/api/accounts` | `{"name":"..."}` 保存当前登录 |
+| `POST` | `/api/accounts/import-token` | `{"refreshToken":"1//...","name":"..."}` 校验并导入单个令牌 |
+| `POST` | `/api/accounts/import-file` | `{"filename":"...","data":"<base64>"}` 导入 JSON 导出或 `state.vscdb` |
+| `POST` | `/api/accounts/scan` | 扫描当前 Antigravity 登录与已知 IDE 状态库并导入 |
 | `POST` | `/api/accounts/{id}/switch` | 切换账号 |
 | `POST` | `/api/accounts/{id}/rename` | `{"name":"..."}` 改显示名 |
 | `POST` | `/api/accounts/{id}/delete` | 删除快照 |

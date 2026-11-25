@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import type { ChangeEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, Database, Globe, FileSearch, Loader2, CheckCircle2, XCircle, Copy, Check, Info, Link2 } from 'lucide-react';
 import { useAccountStore } from '../../stores/useAccountStore';
@@ -6,10 +7,21 @@ import { useTranslation } from 'react-i18next';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import { request as invoke } from '../../utils/request';
-import { isTauri } from '../../utils/env';
+import { isDesktopApp } from '../../utils/env';
 import { parseAccountTransfer } from '../../utils/accountTransfer';
-import { importAccountTransfer, importLocalAccountsReport, type LocalImportSource } from '../../services/accountService';
+import { importAccountTransfer, importAccountsFile, importLocalAccountsReport, type LocalImportSource } from '../../services/accountService';
 import { copyToClipboard } from '../../utils/clipboard';
+
+const MAX_IMPORT_FILE = 10 * 1024 * 1024;
+
+async function fileToBase64(file: File): Promise<string> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    }
+    return btoa(binary);
+}
 
 interface AddAccountDialogProps {
     onAdd: (email: string, refreshToken: string) => Promise<void>;
@@ -22,7 +34,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
     const { t } = useTranslation();
     const fetchAccounts = useAccountStore(state => state.fetchAccounts);
     const [isOpen, setIsOpen] = useState(false);
-    const [activeTab, setActiveTab] = useState<'oauth' | 'token' | 'import'>(isTauri() ? 'oauth' : 'token');
+    const [activeTab, setActiveTab] = useState<'oauth' | 'token' | 'import'>(isDesktopApp() ? 'oauth' : 'token');
     const [refreshToken, setRefreshToken] = useState('');
     const [oauthUrl, setOauthUrl] = useState('');
     const [oauthUrlCopied, setOauthUrlCopied] = useState(false);
@@ -40,6 +52,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
     const activeTabRef = useRef(activeTab);
     const isOpenRef = useRef(isOpen);
     const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => () => {
         if (closeTimerRef.current !== null) clearTimeout(closeTimerRef.current);
@@ -61,7 +74,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
 
     // Listen for OAuth URL
     useEffect(() => {
-        if (!isTauri()) return;
+        if (!isDesktopApp()) return;
         let unlisten: (() => void) | undefined;
 
         const setupListener = async () => {
@@ -80,7 +93,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
 
     // Listen for OAuth callback completion (user may open the URL manually without clicking Start)
     useEffect(() => {
-        if (!isTauri()) return;
+        if (!isDesktopApp()) return;
         let unlisten: (() => void) | undefined;
 
         const setupListener = async () => {
@@ -125,6 +138,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
 
     // Pre-generate OAuth URL when dialog opens on OAuth tab (so URL is shown BEFORE "Start OAuth")
     useEffect(() => {
+        if (!isDesktopApp()) return;
         if (!isOpen) return;
         if (activeTab !== 'oauth') return;
         if (oauthUrl) return;
@@ -151,6 +165,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
 
     // If user navigates away from OAuth tab, cancel prepared flow to release the port.
     useEffect(() => {
+        if (!isDesktopApp()) return;
         if (!isOpen) return;
         if (activeTab === 'oauth') return;
         if (!oauthUrl) return;
@@ -173,7 +188,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
     };
 
     const closeDialog = async () => {
-        if (activeTab === 'oauth') {
+        if (isDesktopApp() && activeTab === 'oauth') {
             await cancelOAuthLogin().catch(() => { });
         }
         setIsOpen(false);
@@ -237,6 +252,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
         // 3. 批量添加
         let successCount = 0;
         let failCount = 0;
+        let firstError = '';
 
         for (let i = 0; i < tokens.length; i++) {
             const currentToken = tokens[i];
@@ -249,6 +265,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
             } catch (error) {
                 console.error(`Failed to add token ${i + 1}:`, error);
                 failCount++;
+                if (!firstError) firstError = String(error);
             }
             // 稍微延迟一下,避免太快
             await new Promise(r => setTimeout(r, 100));
@@ -266,12 +283,12 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
         } else if (successCount > 0) {
             // 部分成功
             setStatus('success'); // 还是用绿色,但提示部分失败
-            setMessage(t('accounts.add.token.batch_partial', { success: successCount, fail: failCount }));
+            setMessage(`${t('accounts.add.token.batch_partial', { success: successCount, fail: failCount })}${firstError ? `: ${firstError}` : ''}`);
             // 不自动关闭,让用户看到结果
         } else {
             // 全部失败
             setStatus('error');
-            setMessage(t('accounts.add.token.batch_fail'));
+            setMessage(`${t('accounts.add.token.batch_fail')}${firstError ? `: ${firstError}` : ''}`);
         }
     };
 
@@ -341,7 +358,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
     };
 
     const handleOAuth = () => {
-        if (!isTauri()) {
+        if (!isDesktopApp()) {
             handleOAuthWeb();
             return;
         }
@@ -381,7 +398,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
             setManualCode('');
 
             // 对齐 Web 模式下的刷新逻辑
-            if (!isTauri()) {
+            if (!isDesktopApp()) {
                 closeTimerRef.current = setTimeout(async () => {
                     await fetchAccounts();
                     setIsOpen(false);
@@ -412,10 +429,44 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
         } catch (error) { setStatus('error'); setMessage(String(error)); }
     };
 
+    const handleWebFileImport = async (event: ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        if (!file) return;
+        if (file.size > MAX_IMPORT_FILE) {
+            setStatus('error');
+            setMessage(t('accounts.add.import.file_too_large', '文件超过 10 MB，请改用 Refresh Token 导入。'));
+            return;
+        }
+        setStatus('loading');
+        setMessage(`${t('accounts.add.import.file_btn')}…`);
+        try {
+            const report = await importAccountsFile(file.name, await fileToBase64(file));
+            await fetchAccounts();
+            setImportSources(report.sources || []);
+            if (report.failed) {
+                setStatus(report.imported ? 'success' : 'error');
+                setMessage(report.imported
+                    ? t('accounts.add.token.batch_partial', { success: report.imported, fail: report.failed })
+                    : t('accounts.add.token.batch_fail'));
+            } else if (report.duplicate && !report.imported) {
+                setStatus('success');
+                setMessage(t('accounts.add.import.duplicate_only', '这些账号已经保存过了，无需重复导入。'));
+            } else {
+                setStatus('success');
+                setMessage(t('accounts.add.token.batch_success', { count: report.imported || 0 }));
+                closeTimerRef.current = setTimeout(() => { setIsOpen(false); resetState(); }, 1500);
+            }
+        } catch (error) {
+            setStatus('error');
+            setMessage(String(error));
+        }
+    };
+
     const handleImportCustomDb = async () => {
         try {
-            if (!isTauri()) {
-                alert(t('common.tauri_api_not_loaded') || 'Storage import only works in desktop app.');
+            if (!isDesktopApp()) {
+                fileInputRef.current?.click();
                 return;
             }
             const selected = await open({
@@ -456,6 +507,17 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
         }
     };
 
+    const openAntigravity = async () => {
+        try {
+            const url = await invoke<string>('get_app_url');
+            if (!url) throw new Error(t('accounts.add.oauth.app_url_missing', '未配置 Antigravity 访问地址'));
+            window.open(url, '_blank', 'noopener');
+        } catch (error) {
+            setStatus('error');
+            setMessage(String(error));
+        }
+    };
+
     // 状态提示组件
     const StatusAlert = () => {
         if (status === 'idle' || !message) return null;
@@ -472,10 +534,15 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
             error: <XCircle className="w-5 h-5" />
         };
 
+        const failedSources = importSources.filter(source => !['imported', 'duplicate'].includes(source.status));
         return (
-            <div className={`alert ${styles[status]} mb-4 text-sm py-2 shadow-sm`}>
+            <div role={status === 'error' ? 'alert' : 'status'} className={`alert ${styles[status]} mb-4 text-sm py-2 shadow-sm`}>
                 {icons[status]}
-                <div><span>{message}</span>{importSources.length > 0 && <><p className="mt-2">{t('accounts.add.import.failure_hint')}</p><ul className="mt-2 max-h-36 overflow-y-auto space-y-1 text-xs">{importSources.map((source, index) => <li key={index} className="break-all">{source.source}: {t('accounts.add.import.status_' + source.status)}</li>)}</ul></>}</div>
+                <div>
+                    <span>{message}</span>
+                    {failedSources.length > 0 && <p className="mt-2">{t('accounts.add.import.failure_hint')}</p>}
+                    {importSources.length > 0 && <ul className="mt-2 max-h-36 overflow-y-auto space-y-1 text-xs">{importSources.map((source, index) => <li key={index} className="break-all">{source.source}: {t('accounts.add.import.status_' + source.status)}{source.message ? `（${source.message}）` : ''}</li>)}</ul>}
+                </div>
             </div>
         );
     };
@@ -489,6 +556,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                     setIsOpen(true);
                 }}
                 title={!showText ? t('accounts.add_account') : undefined}
+                data-testid="agy-add-account-trigger"
             >
                 <Plus className="w-4 h-4" />
                 {showText && <span className="hidden lg:inline">{t('accounts.add_account')}</span>}
@@ -505,7 +573,12 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                     {/* Click outside to close */}
                     <div className="absolute inset-0 z-[0]" onClick={() => void closeDialog()} />
 
-                    <div className="bg-white dark:bg-base-100 text-gray-900 dark:text-base-content rounded-2xl shadow-2xl w-full max-w-lg p-6 relative z-[10] m-4 max-h-[90vh] overflow-y-auto">
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label={t('accounts.add.title')}
+                        className="bg-white dark:bg-base-100 text-gray-900 dark:text-base-content rounded-2xl shadow-2xl w-full max-w-lg p-6 relative z-[10] m-4 max-h-[90vh] overflow-y-auto"
+                    >
                         <h3 className="font-bold text-lg mb-4">{t('accounts.add.title')}</h3>
 
                         {/* Tab 导航 - 胶囊风格 */}
@@ -517,8 +590,9 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                                     : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-base-300'
                                     } `}
                                 onClick={() => setActiveTab('oauth')}
+                                data-testid="agy-add-tab-oauth"
                             >
-                                {t('accounts.add.tabs.oauth')}
+                                {isDesktopApp() ? t('accounts.add.tabs.oauth') : t('accounts.add.tabs.login_guide', '登录新账号')}
                             </button>
                             <button
                                 className={`py-2 px-3 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'token'
@@ -526,6 +600,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                                     : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-base-300'
                                     } `}
                                 onClick={() => setActiveTab('token')}
+                                data-testid="agy-add-tab-token"
                             >
                                 {t('accounts.add.tabs.token')}
                             </button>
@@ -535,16 +610,17 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                                     : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200 hover:bg-gray-200/50 dark:hover:bg-base-300'
                                     } `}
                                 onClick={() => setActiveTab('import')}
+                                data-testid="agy-add-tab-import"
                             >
                                 {t('accounts.add.tabs.import')}
                             </button>
                         </div>
 
                         {/* 添加 Web 模式提示 */}
-                        {!isTauri() && (
+                        {!isDesktopApp() && (
                             <div className="alert alert-info mb-4 text-xs py-2 flex items-center gap-2 bg-blue-50 dark:bg-blue-900/10 text-blue-600 dark:text-blue-400 border-blue-100 dark:border-blue-800">
                                 <Info className="w-4 h-4" />
-                                <span>{t('accounts.add.oauth.web_hint', '将在新窗口中打开 Google 登录页')}</span>
+                                <span>{t('accounts.add.web_mode_hint', '网页版不会在浏览器打开 Google 授权；请使用下方令牌或文件导入。')}</span>
                             </div>
                         )}
 
@@ -552,8 +628,69 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                         <StatusAlert />
 
                         <div className="min-h-[200px]">
-                            {/* OAuth 授权 */}
-                            {activeTab === 'oauth' && (
+                            {/* 网页版：不托管 Google 授权，改为登录后导入 */}
+                            {activeTab === 'oauth' && !isDesktopApp() && (
+                                <div className="space-y-4 py-2">
+                                    <div className="rounded-2xl border border-blue-100 bg-blue-50/60 p-4 dark:border-blue-900/50 dark:bg-blue-950/20">
+                                        <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                                            {t('accounts.add.web_login.title', '网页版登录新账号')}
+                                        </h4>
+                                        <p className="mt-1 text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+                                            {t('accounts.add.web_login.desc', '网页面板不托管 Google 授权。新账号先在 Antigravity 页面完成登录，再回到这里导入令牌。')}
+                                        </p>
+                                        <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+                                            <li>{t('accounts.add.web_login.step1', '先点「保存当前登录」，把正在使用的账号保存为快照。')}</li>
+                                            <li>{t('accounts.add.web_login.step2', '打开 Antigravity，退出当前账号并用新账号完成 Google 登录。')}</li>
+                                            <li>{t('accounts.add.web_login.step3', '回到这里点「扫描并导入本机账号」；也可以直接粘贴 Refresh Token 或选择导出文件。')}</li>
+                                        </ol>
+                                    </div>
+                                    <div className="grid gap-2 sm:grid-cols-2">
+                                        <button
+                                            type="button"
+                                            className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                            onClick={() => void openAntigravity()}
+                                            disabled={status === 'loading'}
+                                            data-testid="agy-add-open-antigravity"
+                                        >
+                                            <Globe className="w-4 h-4" />
+                                            {t('accounts.add.web_login.open', '打开 Antigravity 登录')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-medium text-gray-700 transition-colors hover:border-blue-300 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-base-300 dark:bg-base-100 dark:text-gray-300"
+                                            onClick={() => void handleImportDb()}
+                                            disabled={status === 'loading'}
+                                            data-testid="agy-add-scan"
+                                        >
+                                            <Database className="w-4 h-4" />
+                                            {t('accounts.add.import.scan_btn')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:border-blue-300 hover:text-blue-600 dark:border-base-300 dark:bg-base-100 dark:text-gray-300"
+                                            onClick={() => setActiveTab('token')}
+                                            data-testid="agy-add-use-token"
+                                        >
+                                            {t('accounts.add.tabs.token')}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            className="flex items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 transition-colors hover:border-blue-300 hover:text-blue-600 dark:border-base-300 dark:bg-base-100 dark:text-gray-300"
+                                            onClick={() => setActiveTab('import')}
+                                            data-testid="agy-add-use-file"
+                                        >
+                                            <FileSearch className="w-4 h-4" />
+                                            {t('accounts.add.import.file_btn')}
+                                        </button>
+                                    </div>
+                                    <p className="text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+                                        {t('accounts.add.web_login.note', '浏览器不接触 Google 授权码；令牌由本机服务校验并保存。')}
+                                    </p>
+                                </div>
+                            )}
+
+                            {/* OAuth 授权（桌面版） */}
+                            {activeTab === 'oauth' && isDesktopApp() && (
                                 <div className="space-y-6 py-4">
                                     <div className="text-center space-y-3">
                                         <div className="bg-blue-50 dark:bg-blue-900/20 p-6 rounded-full w-20 h-20 mx-auto flex items-center justify-center">
@@ -695,10 +832,19 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
                                                 {t('accounts.add.import.file_desc')}
                                             </p>
                                         </div>
+                                        <input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            accept=".json,.vscdb,application/json"
+                                            className="hidden"
+                                            aria-label={t('accounts.add.import.file_btn')}
+                                            onChange={handleWebFileImport}
+                                        />
                                         <button
                                             className="flex w-full items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 transition-all hover:border-blue-300 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-base-300 dark:bg-base-100 dark:text-gray-300 dark:hover:text-blue-400"
                                             onClick={handleImportCustomDb}
                                             disabled={status === 'loading' || (status === 'success' && importSources.length === 0)}
+                                            data-testid="agy-add-import-file"
                                         >
                                             <FileSearch className="w-4 h-4" />
                                             {t('accounts.add.import.file_btn')}

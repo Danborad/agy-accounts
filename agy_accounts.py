@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.10.4"
+VERSION = "1.10.5"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -109,8 +109,11 @@ ENV_OVERRIDES = {
 COOKIE_NAME = "agy_accounts_session"
 CSRF_HEADER = "X-Agy-Accounts"
 MAX_BODY = 64 * 1024
+MAX_IMPORT_BODY = 16 * 1024 * 1024
+MAX_IMPORT_TOKENS = 50
 MAX_NAME = 60
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+REFRESH_TOKEN_RE = re.compile(r"^1//[A-Za-z0-9_\-]{10,}$")
 JWT_RE = re.compile(r"^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*$")
 
 log = logging.getLogger("agy-accounts")
@@ -1111,6 +1114,10 @@ class QuotaManager:
             log.exception("额度查询出现未预期错误 id=%s", account_id)
             return {"status": "error", "error": "查询失败：%s" % exc.__class__.__name__}
 
+    def refresh_snapshot(self, raw: bytes, path: str) -> bytes:
+        """用快照中的 refresh_token 换取新令牌并写回，供网页导入时验证登录。"""
+        return self._refresh_and_write(raw, path)
+
     def get_all(self, force: bool = False, cache_only: bool = False) -> Dict[str, Any]:
         # 串行刷新，避免同一令牌被并发刷新或重复打 Google 接口。
         # 读取缓存不等待远程刷新，保证内置账号页和切换状态查询及时返回。
@@ -1290,6 +1297,240 @@ def save_account(cfg: Dict[str, Any], name: str) -> Dict[str, Any]:
     write_json_atomic(account_meta_path(path), meta, 0o600)
     log.info("已保存账号快照 id=%s (%s)", account_id, token_label(live))
     return {"id": account_id, "name": name, "email": meta["email"]}
+
+
+def _find_account_by_refresh(cfg: Dict[str, Any], refresh: str) -> Optional[Dict[str, Any]]:
+    for account in list_accounts(cfg):
+        path = account_dir(cfg, str(account["id"]))
+        if refresh_token_of(read_bytes(account_token_path(path))) == refresh:
+            return account
+    return None
+
+
+def _display_name_for(cfg: Dict[str, Any], name: str, email: str) -> str:
+    base = (name or "").strip() or (email or "").strip() or "账号"
+    base = "".join(ch for ch in base if ord(ch) >= 32 and ord(ch) != 127).strip() or "账号"
+    base = base[:MAX_NAME]
+    candidate = base
+    counter = 2
+    while find_account_by_name(cfg, candidate):
+        suffix = " %d" % counter
+        candidate = base[:max(1, MAX_NAME - len(suffix))] + suffix
+        counter += 1
+    return candidate
+
+
+def add_account_from_refresh(cfg: Dict[str, Any], quota: "QuotaManager", refresh_token: Any,
+                             name: str = "", email: str = "") -> Dict[str, Any]:
+    """网页导入：验证 refresh_token 后保存一份可直接切换的令牌快照。"""
+    if not isinstance(refresh_token, str):
+        raise ApiError(400, "Refresh Token 格式无效")
+    refresh = refresh_token.strip()
+    if not REFRESH_TOKEN_RE.match(refresh):
+        raise ApiError(400, "Refresh Token 格式无效，应以 1// 开头")
+    existing = _find_account_by_refresh(cfg, refresh)
+    if existing:
+        return {"id": existing["id"], "name": existing["name"],
+                "email": existing["email"], "created": False, "duplicate": True}
+
+    display = _display_name_for(cfg, name, email)
+    ensure_dir(cfg["accounts_dir"], 0o700)
+    account_id = _unique_id(cfg, display)
+    path = os.path.join(cfg["accounts_dir"], account_id)
+    ensure_dir(path, 0o700)
+    raw = encode_token_obj({"token": {"refresh_token": refresh}})
+    token_path = account_token_path(path)
+    write_atomic(token_path, raw, 0o600)
+    try:
+        refreshed = quota.refresh_snapshot(raw, token_path)
+    except QuotaError as exc:
+        shutil.rmtree(path, ignore_errors=True)
+        raise ApiError(400, "无法验证该登录令牌：%s" % exc.message)
+    except Exception:
+        shutil.rmtree(path, ignore_errors=True)
+        raise
+
+    mail = email.strip() if isinstance(email, str) else ""
+    if not EMAIL_RE.match(mail):
+        mail = extract_email(refreshed) or extract_email(raw)
+    stamp = now()
+    meta = {"id": account_id, "name": display, "email": mail,
+            "created_at": stamp, "last_used_at": stamp}
+    write_json_atomic(account_meta_path(path), meta, 0o600)
+    log.info("已导入账号 id=%s", account_id)
+    return {"id": account_id, "name": display, "email": mail,
+            "created": True, "duplicate": False}
+
+
+def _token_records_from_obj(value: Any) -> List[Tuple[str, str, str]]:
+    records: List[Tuple[str, str, str]] = []
+    seen = set()
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if depth > 8:
+            return
+        if isinstance(node, dict):
+            token = node.get("refresh_token")
+            if isinstance(token, str) and REFRESH_TOKEN_RE.match(token.strip()):
+                refresh = token.strip()
+                if refresh not in seen:
+                    seen.add(refresh)
+                    mail = ""
+                    for key in ("email", "account", "username"):
+                        candidate = node.get(key)
+                        if isinstance(candidate, str) and EMAIL_RE.match(candidate.strip()):
+                            mail = candidate.strip()
+                            break
+                    label = ""
+                    for key in ("name", "custom_label", "label"):
+                        candidate = node.get(key)
+                        if isinstance(candidate, str) and candidate.strip():
+                            label = candidate.strip()[:MAX_NAME]
+                            break
+                    records.append((refresh, mail, label))
+            for child in node.values():
+                walk(child, depth + 1)
+        elif isinstance(node, list):
+            for child in node[:500]:
+                walk(child, depth + 1)
+
+    walk(value)
+    return records
+
+
+def token_records_from_bytes(data: bytes) -> List[Tuple[str, str, str]]:
+    """从导出 JSON、纯文本或数据库值中提取 refresh_token，不执行任何网络请求。"""
+    if not data:
+        return []
+    text = data.decode("utf-8", "replace").lstrip("\ufeff")
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    records = _token_records_from_obj(parsed) if parsed is not None else []
+    known = {item[0] for item in records}
+    fallback_email = extract_email(data)
+    for match in re.finditer(r"1//[A-Za-z0-9_\-]{10,}", text):
+        refresh = match.group(0)
+        if refresh in known:
+            continue
+        known.add(refresh)
+        window = text[max(0, match.start() - 400):match.end() + 400]
+        mail = re.search(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", window)
+        records.append((refresh, mail.group(0) if mail else fallback_email, ""))
+    return records
+
+
+def _sqlite_values(path: str) -> Iterator[bytes]:
+    uri = "file:%s?mode=ro" % urllib.parse.quote(os.path.abspath(path))
+    connection = sqlite3.connect(uri, uri=True, timeout=2)
+    try:
+        names = [row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        if "ItemTable" in names:
+            names = ["ItemTable"]
+        for name in names[:40]:
+            quoted = '"%s"' % str(name).replace('"', '""')
+            try:
+                rows = connection.execute("SELECT * FROM %s LIMIT 5000" % quoted)
+            except sqlite3.Error:
+                continue
+            for row in rows:
+                for value in row:
+                    if isinstance(value, str):
+                        value = value.encode("utf-8", "replace")
+                    if isinstance(value, (bytes, bytearray)) and len(value) <= 2 * 1024 * 1024 \
+                            and (b"refresh_token" in value or b"1//" in value):
+                        yield bytes(value)
+    finally:
+        connection.close()
+
+
+def token_records_from_db(path: str) -> List[Tuple[str, str, str]]:
+    records: List[Tuple[str, str, str]] = []
+    seen = set()
+    for value in _sqlite_values(path):
+        for record in token_records_from_bytes(value):
+            if record[0] not in seen:
+                seen.add(record[0])
+                records.append(record)
+    return records
+
+
+def import_token_records(cfg: Dict[str, Any], quota: "QuotaManager",
+                         records: List[Tuple[str, str, str, str]],
+                         operation_lock: "ServiceOperationLock") -> Dict[str, Any]:
+    unique: List[Tuple[str, str, str, str]] = []
+    seen = set()
+    for record in records:
+        if record[0] in seen:
+            continue
+        seen.add(record[0])
+        unique.append(record)
+    if not unique:
+        raise ApiError(400, "没有找到可导入的 Antigravity 登录令牌")
+
+    accounts: List[Dict[str, Any]] = []
+    sources: List[Dict[str, Any]] = []
+    counts = {"imported": 0, "duplicate": 0, "failed": 0}
+    with operation_lock.hold("导入账号"):
+        for refresh, mail, name, source in unique[:MAX_IMPORT_TOKENS]:
+            status, message = "imported", ""
+            try:
+                result = add_account_from_refresh(cfg, quota, refresh, name=name, email=mail)
+                if result["duplicate"]:
+                    status = "duplicate"
+                else:
+                    counts["imported"] += 1
+                    accounts.append({"id": result["id"], "name": result["name"],
+                                     "email": result["email"]})
+            except ApiError as exc:
+                status, message = "failed", exc.message
+            if status == "duplicate":
+                counts["duplicate"] += 1
+            elif status == "failed":
+                counts["failed"] += 1
+            entry = {"source": source or "账号文件", "status": status}
+            if message:
+                entry["message"] = message
+            sources.append(entry)
+    result = dict(counts, accounts=accounts, sources=sources)
+    if len(unique) > MAX_IMPORT_TOKENS:
+        result["truncated"] = len(unique) - MAX_IMPORT_TOKENS
+    return result
+
+
+def scan_local_token_records(cfg: Dict[str, Any]) -> List[Tuple[str, str, str, str]]:
+    """只读取已知的 Antigravity 令牌文件与 IDE 状态库，不扫描对话内容。"""
+    records: List[Tuple[str, str, str, str]] = []
+    live = read_bytes(cfg["token_path"])
+    for refresh, mail, name in token_records_from_bytes(live or b""):
+        records.append((refresh, mail, name, "当前 Antigravity 登录"))
+
+    # 以令牌文件所在用户目录为基准，测试与自定义部署都不会误扫宿主机其它账号。
+    home = os.path.dirname(os.path.dirname(os.path.abspath(cfg["token_path"])))
+    candidates = [
+        ("Antigravity IDE", os.path.join(home, ".config/Antigravity/User/globalStorage/state.vscdb")),
+        ("Antigravity IDE", os.path.join(home, ".config/Antigravity IDE/User/globalStorage/state.vscdb")),
+        ("Antigravity IDE", os.path.join(home, ".config/antigravity/User/globalStorage/state.vscdb")),
+        ("Antigravity IDE", os.path.join(home, ".config/antigravity-ide/User/globalStorage/state.vscdb")),
+        ("VS Code", os.path.join(home, ".config/Code/User/globalStorage/state.vscdb")),
+        ("Antigravity (macOS)", os.path.join(home, "Library/Application Support/Antigravity/User/globalStorage/state.vscdb")),
+    ]
+    seen = {item[0] for item in records}
+    for label, path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            found = token_records_from_db(path)
+        except (sqlite3.Error, OSError) as exc:
+            log.warning("读取本机账号库失败 %s：%s", label, exc.__class__.__name__)
+            continue
+        for refresh, mail, name in found:
+            if refresh not in seen:
+                seen.add(refresh)
+                records.append((refresh, mail, name, label))
+    return records
 
 
 def read_target_token(cfg: Dict[str, Any], account_id: str) -> Tuple[str, bytes, Dict[str, Any]]:
@@ -2372,14 +2613,14 @@ class PanelHandler(BaseHTTPRequestHandler):
             body.update(extra)
         self._json(status, body)
 
-    def _read_body(self) -> Dict[str, Any]:
+    def _read_body(self, limit: int = MAX_BODY) -> Dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             raise ApiError(400, "请求体长度不合法")
         if length <= 0:
             return {}
-        if length > MAX_BODY:
+        if length > limit:
             raise ApiError(413, "请求体过大")
         raw = self.rfile.read(length)
         try:
@@ -2618,6 +2859,57 @@ class PanelHandler(BaseHTTPRequestHandler):
                 with self.app.operation_lock.hold("保存账号快照"):
                     result = save_account(self.app.cfg, body.get("name", ""))
                 self._json(200, {"ok": True, "account": result})
+                return
+            if path == "/api/accounts/import-token":
+                body = self._read_body()
+                refresh = body.get("refreshToken") or body.get("refresh_token")
+                name = body.get("name") if isinstance(body.get("name"), str) else ""
+                email = body.get("email") if isinstance(body.get("email"), str) else ""
+                with self.app.operation_lock.hold("导入账号"):
+                    result = add_account_from_refresh(self.app.cfg, self.app.quota, refresh,
+                                                      name=name, email=email)
+                message = ("该登录已保存为「%s」" % result["name"] if result["duplicate"]
+                           else "已导入账号「%s」" % result["name"])
+                account = {"id": result["id"], "name": result["name"], "email": result["email"]}
+                self._json(200, dict(result, ok=True, account=account, message=message))
+                return
+            if path == "/api/accounts/import-file":
+                body = self._read_body(MAX_IMPORT_BODY)
+                filename = body.get("filename") if isinstance(body.get("filename"), str) else ""
+                encoded = body.get("data")
+                if not isinstance(encoded, str) or not encoded:
+                    raise ApiError(400, "请选择要导入的账号文件")
+                try:
+                    data = base64.b64decode(encoded, validate=True)
+                except (ValueError, TypeError):
+                    raise ApiError(400, "文件内容编码无效")
+                if len(data) > MAX_IMPORT_BODY:
+                    raise ApiError(413, "账号文件过大")
+                label = re.sub(r"[\x00-\x1f\x7f]", "", os.path.basename(filename))[:80] or "账号文件"
+                if data.startswith(b"SQLite format 3\x00"):
+                    handle, temp_path = tempfile.mkstemp(prefix="agy-import-", suffix=".vscdb")
+                    try:
+                        with os.fdopen(handle, "wb") as stream:
+                            stream.write(data)
+                        records = token_records_from_db(temp_path)
+                    finally:
+                        try:
+                            os.unlink(temp_path)
+                        except OSError:
+                            pass
+                else:
+                    records = token_records_from_bytes(data)
+                result = import_token_records(
+                    self.app.cfg, self.app.quota,
+                    [(refresh, mail, name, label) for refresh, mail, name in records],
+                    self.app.operation_lock)
+                self._json(200, dict(result, ok=True))
+                return
+            if path == "/api/accounts/scan":
+                records = scan_local_token_records(self.app.cfg)
+                result = import_token_records(self.app.cfg, self.app.quota, records,
+                                              self.app.operation_lock)
+                self._json(200, dict(result, ok=True))
                 return
             if path == "/api/status":
                 self._json(200, self.app.status_payload())

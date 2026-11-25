@@ -11,6 +11,9 @@
 (function () {
   "use strict";
 
+  // 桥接也提供 __TAURI_INTERNALS__；用它区分“网页”与真正的桌面外壳。
+  window.__AGY_WEB_BRIDGE__ = true;
+
   var CONFIG_KEY = "agy-accounts-web-config";
   var DASHBOARD_KEY = "agy-accounts-dashboard-preferences";
   var DEFAULT_DASHBOARD_CARDS = [
@@ -451,7 +454,32 @@
   }
 
   function webLoginError() {
-    return new Error("Web 版不在这里完成 Google 授权。请打开 Antigravity 页面登录，再回面板保存。");
+    return new Error("网页版不托管 Google 授权。请先在 Antigravity 页面登录新账号，再回到这里扫描导入；也可以直接粘贴 Refresh Token 或选择导出文件。");
+  }
+
+  async function importRefreshToken(refreshToken, name, email) {
+    var result = await api("/api/accounts/import-token", {
+      method: "POST",
+      body: JSON.stringify({
+        refreshToken: refreshToken,
+        name: name || "",
+        email: email || ""
+      })
+    });
+    var account = result.account || result;
+    return {
+      id: account.id,
+      email: account.email || account.name || account.id,
+      name: account.name || null,
+      custom_label: account.name && account.name !== account.email ? account.name : null,
+      duplicate: result.duplicate === true,
+      message: result.message || ""
+    };
+  }
+
+  async function scanLocalAccounts() {
+    var result = await api("/api/accounts/scan", { method: "POST", body: "{}" });
+    return { accounts: result.accounts || [], sources: result.sources || [] };
   }
 
   // -------------------------------------------------------------- bridge
@@ -639,6 +667,10 @@
         return "agy-accounts 1.3.0 (web)";
       case "get_data_dir_path":
         return "/root/.config/agy-accounts";
+      case "get_app_url": {
+        var appStatus = await api("/api/status");
+        return appStatus.app_url || "";
+      }
       case "get_desktop_settings":
         return {
           platform: "linux", tray_available: false, autostart_supported: false,
@@ -757,18 +789,31 @@
       case "check_for_updates":
         return null;
       case "add_account":
+        return await importRefreshToken(args.refreshToken, "", args.email);
+      case "import_account_transfer": {
+        var transfer = args.item || {};
+        return await importRefreshToken(transfer.refresh_token,
+          transfer.custom_label || transfer.name, transfer.email);
+      }
+      case "import_accounts_file":
+        return await api("/api/accounts/import-file", {
+          method: "POST",
+          body: JSON.stringify({ filename: args.filename, data: args.data })
+        });
+      case "import_local_accounts_report":
+        return await scanLocalAccounts();
+      case "import_from_db":
+        return (await scanLocalAccounts()).accounts;
+      case "import_custom_db":
+        throw new Error("网页版不能直接读取本机路径，请改用“选择文件…”导入。");
       case "start_oauth_login":
       case "prepare_oauth_url":
       case "complete_oauth_login":
       case "submit_oauth_code":
       case "cancel_oauth_login":
-      case "import_from_db":
-      case "import_custom_db":
       case "sync_account_from_db":
-      case "import_local_accounts_report":
       case "export_accounts":
       case "save_account_export":
-      case "import_account_transfer":
       case "download_and_install_update":
       case "quit_app":
         throw webLoginError();

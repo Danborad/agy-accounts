@@ -219,8 +219,19 @@
       "title": "Add Account",
       "tabs": {
         "oauth": "OAuth",
+        "login_guide": "Sign in",
         "token": "Refresh Token",
         "import": "Local import"
+      },
+      "web_mode_hint": "The web panel does not open Google authorization; import a token or file below.",
+      "web_login": {
+        "title": "Sign in a new account on the web",
+        "desc": "The web panel does not host Google authorization. Sign in on the Antigravity page first, then import the token here.",
+        "step1": "Click \"Save current login\" first to keep the account you are using.",
+        "step2": "Open Antigravity, sign out and complete Google sign-in with the new account.",
+        "step3": "Come back and click \"Scan and import\"; you can also paste a Refresh Token or choose an export file.",
+        "open": "Open Antigravity sign-in",
+        "note": "The browser never handles the Google authorization code; the local service validates and stores the token."
       },
       "oauth": {
         "recommend": "Recommended",
@@ -259,6 +270,8 @@
         "file_title": "Import an account export or database file",
         "file_desc": "Choose a Switch JSON export or an Antigravity state.vscdb file. Partial import results stay open for review.",
         "file_btn": "Choose a file…",
+        "file_too_large": "The file is over 10 MB. Import a Refresh Token instead.",
+        "duplicate_only": "These accounts are already saved; nothing to import.",
         "summary": "Imported {{success}} accounts; {{failed}} sources need attention",
         "failure_hint": "Check login state, database locations and the system proxy for failed sources. Sign in again if credentials have expired.",
         "status_imported": "Imported",

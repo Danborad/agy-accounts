@@ -132,9 +132,20 @@ export async function importFromDb(targetIde?: string): Promise<Account[]> {
     return res ? [res] : [];
 }
 
-export interface AccountFileImportReport { imported: number; failed: number; }
+export interface AccountFileImportReport {
+    imported: number;
+    failed: number;
+    duplicate?: number;
+    truncated?: number;
+    accounts?: Account[];
+    sources?: LocalImportSource[];
+}
 export async function importFromCustomDb(path: string): Promise<AccountFileImportReport> {
     return await invoke('import_custom_db', { path });
+}
+/** 网页版：把浏览器选中的 JSON 导出或 state.vscdb 交给服务端解析，不暴露本机路径。 */
+export async function importAccountsFile(filename: string, data: string): Promise<AccountFileImportReport> {
+    return await invoke('import_accounts_file', { filename, data });
 }
 
 export async function syncAccountFromDb(): Promise<Account | null> {
@@ -181,7 +192,7 @@ export async function saveAccountExport(accountIds: string[], path: string): Pro
 export async function importAccountTransfer(item: ExportAccountItem): Promise<Account> {
     return invoke('import_account_transfer', { item });
 }
-export interface LocalImportSource { source: string; status: string; }
+export interface LocalImportSource { source: string; status: string; message?: string; }
 export interface LocalImportReport { accounts: Account[]; sources: LocalImportSource[]; }
 export async function importLocalAccountsReport(): Promise<LocalImportReport> {
     return invoke('import_local_accounts_report');

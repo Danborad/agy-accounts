@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 与语义化版本。
 
+## [1.10.5] - 2026-11-25
+
+### 修复
+
+- 修复网页版「添加新账号」把桥接误判为桌面外壳的问题：网页默认进入 Refresh Token 导入，不再调用无法使用的桌面 OAuth。
+- 「登录新账号」页改为明确说明网页不托管 Google 授权，并提供打开 Antigravity 登录、扫描导入、令牌导入和文件导入四个可用入口。
+- 「选择文件…」改为浏览器文件选择，由服务端解析 JSON 导出或 `state.vscdb`；不再因为桥接返回空路径而无响应。
+- 新增 `POST /api/accounts/import-token`、`/import-file`、`/scan`：服务端校验 refresh_token 后再保存快照，支持去重、失效回滚，并且不向浏览器返回令牌。
+- 「扫描并导入本机账号」现在读取当前 Antigravity 登录和已知的 IDE 状态库，不会扫描对话内容。
+
 ## [1.10.4] - 2026-11-25
 
 ### 修复
