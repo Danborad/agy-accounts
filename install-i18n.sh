@@ -73,6 +73,9 @@ if [[ "${WITH_POWERTOOLS}" != "0" && -d "${HOME}/.gemini/config/plugins/agy-powe
       (umask 077; python3 -c 'import secrets; print(secrets.token_hex(32))' > /etc/agy-powertools/accounts.key)
     fi
     [[ "${BRIDGE_KEY}" =~ ^[a-f0-9]{64}$ ]] || die "桥接密钥格式无效：${POWERTOOLS_KEY}"
+    if [[ -f "${HOME}/.config/agy-accounts/config.json" ]]; then
+      bash "${SRC}/install-core-update.sh"
+    fi
     sed "s|__BRIDGE_KEY__|${BRIDGE_KEY}|g" \
       "${SRC}/deploy/agy-powertools-nginx.inc" > "${POWERTOOLS_CONF}"
     chmod 0600 "${POWERTOOLS_CONF}"
@@ -92,7 +95,7 @@ if [[ "${WITH_POWERTOOLS}" != "0" && -d "${HOME}/.gemini/config/plugins/agy-powe
     sleep 1
     if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${POWERTOOLS_PORT}/healthz', timeout=3)" >/dev/null 2>&1; then
       ok "Powertools 网页桥接已启动（127.0.0.1:${POWERTOOLS_PORT}）"
-      POWERTOOLS_SCRIPT='<script src="/__agy-powertools/bootstrap.js?v=5" defer></script>'
+      POWERTOOLS_SCRIPT='<script src="/__agy-powertools/bootstrap.js?v=6" defer></script>'
     else
       warn "Powertools 网页桥接未就绪，查看 journalctl -u agy-powertools-web；原网页仍可正常使用"
     fi

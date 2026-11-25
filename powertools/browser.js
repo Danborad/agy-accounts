@@ -2,7 +2,7 @@
 (() => {
   if (window !== window.top || window.__agyPowertoolsWeb) return;
   const endpoint = '/__agy-powertools/';
-  const assetVersion = '5';
+  const assetVersion = '6';
   window.__agyPowertoolsWeb = { transport: 'same-origin' };
   window.__agyPowertoolsWeb.rpc = async (method, payload = {}) => {
     const response = await fetch(`${endpoint}rpc`, {

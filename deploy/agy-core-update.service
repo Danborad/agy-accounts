@@ -1,0 +1,17 @@
+[Unit]
+Description=Confirmed Antigravity core update worker
+After=agy-accounts.service
+
+[Service]
+Type=oneshot
+User=root
+Environment=HOME=__HOME__
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=__PYTHON__ __PREFIX__/core_update_worker.py --config __CONFIG__
+TimeoutStartSec=500
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__CORE_DIR__ __HOME__/.agy-remote __HOME__/.local/share/agy-accounts/core-updates
+UMask=0077

@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.10.3"
+VERSION = "1.10.4"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -1911,9 +1911,12 @@ def check_official_update(cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def apply_language_server_update(cfg: Dict[str, Any],
-                                 operation_lock: ServiceOperationLock) -> Dict[str, Any]:
+                                 operation_lock: ServiceOperationLock,
+                                 expected_version: str = "", progress=None) -> Dict[str, Any]:
     """更新官方 language_server，并重启 agy-server 让新版本生效。"""
     with operation_lock.hold("系统更新"):
+        if progress:
+            progress("downloading", "正在检查并下载官方核心更新")
         before = update_status(cfg)
         if not before["running"]:
             raise ApiError(503, "无法确认受管语言服务器的当前版本，未执行更新。")
@@ -1933,10 +1936,14 @@ def apply_language_server_update(cfg: Dict[str, Any],
         expected = match.group(1) if match else staged_language_server_version()
         if not expected:
             raise ApiError(502, "更新程序未报告目标版本；未重启服务。")
+        if expected_version and expected != expected_version:
+            raise ApiError(409, "官方版本已变化，未重启服务；请重新检查并确认目标版本")
         if before["running"] == expected:
             return dict(update_status(cfg), message="当前已是目标版本，未重启", output=output[-1200:])
 
         log.warning("开始重启 agy-server 应用 Antigravity 更新")
+        if progress:
+            progress("restarting", "更新已下载，正在重启 Antigravity 核心")
         try:
             stop_service(cfg)
             start_service(cfg)
@@ -1948,6 +1955,8 @@ def apply_language_server_update(cfg: Dict[str, Any],
 
         # The web probe can respond before the managed language server is launched.
         deadline = time.monotonic() + max(3, cfg["probe_timeout"])
+        if progress:
+            progress("verifying", "正在验证目标核心版本是否运行")
         while True:
             after = update_status(cfg)
             if after["running"] == expected:
@@ -2416,9 +2425,13 @@ class PanelHandler(BaseHTTPRequestHandler):
         action = body.get("action")
         if action == "list":
             result = self.app.powertools_accounts()
-        elif action in ("core_update_status", "core_update_check"):
+        elif action in ("core_update_status", "core_update_check", "core_update_apply"):
             if action == "core_update_check":
                 self.app.check_powertools_update()
+            elif action == "core_update_apply":
+                if body.get("confirmed") is not True:
+                    raise ApiError(400, "核心更新须明确确认")
+                self.app.start_core_update(body.get("version"))
             result = self.app.powertools_update()
         elif action in ("plugin_update_status", "plugin_update_start"):
             if action == "plugin_update_start":
@@ -2506,7 +2519,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/update":
                 self._require_auth()
-                self._json(200, dict(update_status(self.app.cfg), ok=True))
+                self._json(200, dict(self.app.powertools_update(), ok=True))
                 return
             if path == "/api/usage":
                 self._require_auth()
@@ -2576,8 +2589,13 @@ class PanelHandler(BaseHTTPRequestHandler):
                 action = str(body.get("action") or "apply")
                 if action == "check":
                     result = check_official_update(self.app.cfg)
+                    with self.app._pw_update_state_lock:
+                        self.app._pw_update.update(state="success", latest=result["latest"], checked_at=now(), error="")
                 elif action == "apply":
-                    result = apply_language_server_update(self.app.cfg, self.app.operation_lock)
+                    if self.app.core_update_enabled():
+                        result = self.app.start_core_update(body.get("version") or self.app.powertools_update()["latest"])
+                    else:
+                        result = apply_language_server_update(self.app.cfg, self.app.operation_lock)
                 else:
                     raise ApiError(400, "action 必须是 check 或 apply")
                 self._json(200, dict(result, ok=True))
@@ -2723,6 +2741,66 @@ class App:
         self._pw_update: Dict[str, Any] = {"state": "idle", "checked_at": 0}
         self._pw_update_attempt = 0.0
         self._plugin_update_lock = threading.Lock()
+        self._core_update_lock = threading.Lock()
+
+    def core_update_root(self) -> str:
+        return expand_path("~/.local/share/agy-accounts/core-updates")
+
+    def core_update_enabled(self) -> bool:
+        return os.path.isfile("/etc/systemd/system/agy-core-update.service")
+
+    def core_update_job(self) -> Dict[str, Any]:
+        stored = read_json(os.path.join(self.core_update_root(), "state.json"))
+        return {key: stored[key] for key in ("id", "state", "message", "version", "at") if key in stored}
+
+    def start_core_update(self, version: str) -> Dict[str, Any]:
+        if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
+            raise ApiError(400, "核心版本无效，请先检查更新")
+        if not self.core_update_enabled():
+            raise ApiError(503, "核心更新服务未安装")
+        if not self._core_update_lock.acquire(blocking=False):
+            raise ApiError(409, "核心更新正在进行")
+        operation = self.operation_lock.hold("Antigravity 核心更新")
+        held = False
+        root = self.core_update_root()
+        job_id = secrets.token_hex(16)
+        try:
+            operation.__enter__()
+            held = True
+            if self.core_update_job().get("state") in ("pending", "downloading", "restarting", "verifying"):
+                raise ApiError(409, "已有核心更新尚未结束，请核对服务状态")
+            status = self.powertools_update()
+            if not status["running"] or not status["available"] or status["latest"] != version:
+                raise ApiError(409, "核心版本状态已变化，未更新；请重新检查并确认")
+            ensure_dir(root)
+            write_json_atomic(os.path.join(root, "plan.json"), {"id": job_id, "version": version, "at": now()})
+            write_json_atomic(os.path.join(root, "state.json"), {
+                "id": job_id, "version": version, "state": "pending", "message": "已提交核心更新，等待执行", "at": now()})
+        except Exception:
+            if held:
+                operation.__exit__(None, None, None)
+            self._core_update_lock.release()
+            raise
+
+        def update() -> None:
+            try:
+                proc = subprocess.run(["systemctl", "start", "agy-core-update"], timeout=510, capture_output=True)
+                state = self.core_update_job()
+                if state.get("state") not in ("success", "failed"):
+                    raise ApiError(502, "核心更新服务未正常结束，无法确认更新结果")
+                if proc.returncode != 0 and state.get("state") == "success":
+                    raise ApiError(502, "核心更新服务异常退出，请核对当前版本")
+            except Exception:
+                log.exception("独立核心更新服务失败")
+                write_json_atomic(os.path.join(root, "state.json"), {
+                    "id": job_id, "version": version, "state": "failed", "at": now(),
+                    "message": "核心更新未确认成功，请核对运行版本和主机日志"})
+            finally:
+                operation.__exit__(None, None, None)
+                self._core_update_lock.release()
+
+        threading.Thread(target=update, daemon=True).start()
+        return {"jobId": job_id, "message": "核心更新已提交，正在后台执行"}
 
     def plugin_update_root(self) -> str:
         return expand_path("~/.local/share/agy-accounts/powertools-updates")
@@ -2790,7 +2868,7 @@ class App:
             status["latest"] = checked["latest"]
             status["available"] = bool(status["running"] and status["latest"] != status["running"])
         status.pop("binary", None)
-        return dict(status, check=checked)
+        return dict(status, check=checked, update=self.core_update_job(), canApply=self.core_update_enabled())
 
     def check_powertools_update(self) -> None:
         """后台只查询官方版本，不下载、不重启，立即返回给网页轮询。"""

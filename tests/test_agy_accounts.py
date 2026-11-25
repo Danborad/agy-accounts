@@ -120,6 +120,9 @@ class PanelTest(unittest.TestCase):
 
         self.loaded = agy_accounts.load_config(self.config_path)
         self.app = agy_accounts.App(self.loaded)
+        core_service = mock.patch.object(self.app, "core_update_enabled", return_value=False)
+        core_service.start()
+        self.addCleanup(core_service.stop)
         verify = mock.patch.object(agy_accounts, "wait_language_server_auth", return_value={
             "signed_in": True, "ineligible": False, "message": ""})
         self.verify_auth = verify.start()
@@ -698,6 +701,40 @@ class PanelTest(unittest.TestCase):
             self.app._pw_update_lock.release()
             self.assertEqual(self.app.powertools_update()["check"], {"state": "failed", "checked_at": 0, "error": "网络超时"})
 
+    def test_core_update_runs_separate_service_holds_lock_and_reports_worker_status(self):
+        started, finish = threading.Event(), threading.Event()
+        root = os.path.join(self.tmp, "core-updates")
+
+        def worker(args, **kwargs):
+            self.assertEqual(args, ["systemctl", "start", "agy-core-update"])
+            started.set()
+            self.assertTrue(finish.wait(timeout=5))
+            plan = agy_accounts.read_json(os.path.join(root, "plan.json"))
+            agy_accounts.write_json_atomic(os.path.join(root, "state.json"), {
+                "id": plan["id"], "version": plan["version"], "state": "success", "message": "已验证 2.35.1"})
+            return mock.Mock(returncode=0)
+
+        with mock.patch.object(self.app, "core_update_root", return_value=root), \
+                mock.patch.object(self.app, "core_update_enabled", return_value=True), \
+                mock.patch.object(agy_accounts, "update_status", return_value={"running": "2.35.0", "latest": "2.35.1", "available": True}), \
+                mock.patch.object(agy_accounts.subprocess, "run", side_effect=worker):
+            with self.assertRaises(agy_accounts.ApiError):
+                self.app.start_core_update("2.34.0")
+            result = self.app.start_core_update("2.35.1")
+            self.assertTrue(started.wait(timeout=5))
+            self.assertEqual(self.app.powertools_update()["update"]["state"], "pending")
+            with self.assertRaises(agy_accounts.ApiError):
+                self.app.operation_lock.hold("账号切换").__enter__()
+            with self.assertRaises(agy_accounts.ApiError):
+                self.app.start_core_update("2.35.1")
+            finish.set()
+            self.assertTrue(self.app._core_update_lock.acquire(timeout=5))
+            self.app._core_update_lock.release()
+            self.assertEqual(self.app.core_update_job()["id"], result["jobId"])
+            self.assertEqual(self.app.core_update_job()["state"], "success")
+            with self.app.operation_lock.hold("后续操作"):
+                pass
+
     def test_plugin_update_reserves_shared_lock_and_releases_after_worker(self):
         started, finish = threading.Event(), threading.Event()
         root = os.path.join(self.tmp, 'updates')
@@ -734,6 +771,29 @@ class PanelTest(unittest.TestCase):
         command.assert_not_called()
         with self.app.operation_lock.hold("再次操作"):
             pass
+
+    def test_legacy_update_button_uses_worker_not_readonly_panel_download(self):
+        self.login()
+        with mock.patch.object(self.app, "core_update_enabled", return_value=True), \
+                mock.patch.object(self.app, "powertools_update", return_value={"latest": "2.35.1"}), \
+                mock.patch.object(self.app, "start_core_update", return_value={"jobId": "test-job"}) as worker, \
+                mock.patch.object(agy_accounts, "apply_language_server_update") as direct:
+            status, data, _ = self.request("POST", "/api/update", {"action": "apply"})
+            self.assertEqual(status, 200)
+            self.assertEqual(data["jobId"], "test-job")
+            worker.assert_called_once_with("2.35.1")
+            direct.assert_not_called()
+
+    def test_changed_official_version_does_not_restart_unconfirmed_target(self):
+        with mock.patch.object(agy_accounts, "running_language_server_version", return_value="2.35.0"), \
+                mock.patch.object(agy_accounts.os, "access", return_value=True), \
+                mock.patch.object(agy_accounts.subprocess, "run", return_value=mock.Mock(
+                    returncode=0, stdout="Latest version : 2.36.0", stderr="")), \
+                mock.patch.object(agy_accounts, "stop_service") as stop:
+            with self.assertRaises(agy_accounts.ApiError) as caught:
+                agy_accounts.apply_language_server_update(self.loaded, self.app.operation_lock, expected_version="2.35.1")
+            self.assertEqual(caught.exception.status, 409)
+            stop.assert_not_called()
 
     def test_update_must_reach_expected_version(self):
         self.login()
@@ -806,6 +866,9 @@ class PanelTest(unittest.TestCase):
                     self.assertEqual(internal({"action": "core_update_check"})[0], 200)
                     check.assert_called_once()
                     self.assertEqual(internal({"action": "core_update_apply"})[0], 400)
+                    with mock.patch.object(self.app, "start_core_update") as apply:
+                        self.assertEqual(internal({"action": "core_update_apply", "version": "2.35.1", "confirmed": True})[0], 200)
+                        apply.assert_called_once_with("2.35.1")
 
     def test_background_switch_uses_shared_lock_and_reports_verification_result(self):
         self.write_token('{"access_token":"candidate"}')

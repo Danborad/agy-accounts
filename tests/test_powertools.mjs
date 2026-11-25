@@ -97,6 +97,9 @@ test('桥接认证、Origin 校验和 RPC 白名单', async t => {
     const count = calls.length;
     assert.equal((await rpc('coreUpdate.apply')).status, 400);
     assert.equal(calls.length, count);
+    assert.equal((await rpc('coreUpdate.apply', { version: '2.35.1', confirmed: false })).status, 400);
+    assert.equal((await rpc('coreUpdate.apply', { version: '2.35.1', confirmed: true })).status, 200);
+    assert.deepEqual(calls.at(-1), { action: 'core_update_apply', payload: { version: '2.35.1', confirmed: true } });
     assert.equal((await rpc('serverAccounts.switch', { accountId: 'a' })).status, 400);
     assert.equal((await rpc('serverAccounts.switch', { accountId: '../../etc/passwd', confirmed: true, expectedCurrentId: '' })).status, 400);
     assert.equal((await rpc('serverAccounts.switch', { accountId: '主账号', confirmed: true, expectedCurrentId: 'previous' })).status, 200);
@@ -116,4 +119,20 @@ test('桥接认证、Origin 校验和 RPC 白名单', async t => {
     assert.equal(invalid.status, 400);
     const large = await rpc('settings.get', { ignored: 'x'.repeat(65536) });
     assert.equal(large.status, 413);
+});
+
+test('插件成功检查合并并发请求并缓存，避免重复打 GitHub', async t => {
+    const plugin = fixture();
+    let count = 0;
+    plugin.updates.checkForUpdates = async () => { count++; return { status: 'current', canInstall: false }; };
+    const server = createBridge({ plugin, secret, scriptSource: '' });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    const rpc = () => fetch(`http://127.0.0.1:${server.address().port}/rpc`, {
+        method: 'POST', headers, body: JSON.stringify({ id: 1, method: 'update.check' }),
+    });
+    await Promise.all([rpc(), rpc()]);
+    await rpc();
+    assert.equal(count, 1);
 });

@@ -728,11 +728,23 @@
           method: "POST",
           body: JSON.stringify({ action: "check" })
         });
-      case "apply_update":
-        return await api("/api/update", {
+      case "apply_update": {
+        var update = await api("/api/update", {
           method: "POST",
           body: JSON.stringify({ action: "apply" })
         });
+        if (!update.jobId) return update;
+        var deadline = Date.now() + 600000;
+        while (Date.now() < deadline) {
+          await new Promise(function (resolve) { setTimeout(resolve, 2000); });
+          var state = await api("/api/update");
+          if (state.update && state.update.id === update.jobId) {
+            if (state.update.state === "success") return Object.assign({}, state, { message: state.update.message });
+            if (state.update.state === "failed") throw new Error(state.update.message);
+          }
+        }
+        throw new Error("核心更新结果尚未确认，请核对当前版本，不要重复更新。");
+      }
       case "set_desktop_preferences":
       case "set_menu_bar_preferences":
       case "open_data_folder":

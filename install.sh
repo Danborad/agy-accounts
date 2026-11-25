@@ -118,6 +118,7 @@ info "安装到 ${PREFIX}"
 install -d -m 0755 "${PREFIX}"
 rm -rf "${PREFIX}/web"
 install -m 0755 "${SRC}/agy_accounts.py" "${PREFIX}/agy_accounts.py"
+install -m 0755 "${SRC}/core_update_worker.py" "${PREFIX}/core_update_worker.py"
 if [[ -d "${SRC}/webapp" ]]; then
   rm -rf "${PREFIX}/webapp"
   cp -a "${SRC}/webapp" "${PREFIX}/webapp"
@@ -228,6 +229,11 @@ sed -e "s|__USER__|${RUN_USER}|g" \
     -e "s|__TOKEN_DIR__|${TOKEN_DIR}|g" \
     "${SRC}/deploy/agy-accounts.service.in" > "${UNIT_PATH}"
 chmod 0644 "${UNIT_PATH}"
+
+if [[ "${RUN_USER}" == root && -d "${HOME_DIR}/.agy-remote" ]]; then
+  HOME="${HOME_DIR}" AGY_ACCOUNTS_PREFIX="${PREFIX}" AGY_ACCOUNTS_CONFIG="${CONFIG_PATH}" PYTHON="${PYTHON}" \
+    bash "${SRC}/install-core-update.sh"
+fi
 
 systemctl daemon-reload
 systemctl enable "${UNIT_NAME}" >/dev/null

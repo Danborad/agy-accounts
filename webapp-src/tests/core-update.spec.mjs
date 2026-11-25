@@ -64,3 +64,32 @@ test('核心检查过程中禁用按钮并轮询，刷新不会重复查询官�
     await expect(page.getByTestId('agy-core-update-status')).toContainText('已是官方最新版本');
     expect(await page.evaluate(() => window.checkCalls)).toBe(1);
 });
+
+test('核心更新必须二次确认，取消不执行，失败不误报完成', async ({ page }) => {
+    await page.route('http://localhost:4173/update-test', route => route.fulfill({ contentType: 'text/html', body: '<div id="root"></div>' }));
+    await page.goto('http://localhost:4173/update-test');
+    await page.evaluate(() => {
+        window.applyCalls = [];
+        window.result = { running: '2.35.0', latest: '2.35.1', available: true, canApply: true,
+            check: { state: 'success', latest: '2.35.1' }, update: {} };
+        window.__agyPowertoolsWeb = { rpc: async (method, payload) => {
+            if (method === 'coreUpdate.apply') {
+                window.applyCalls.push(payload);
+                window.result = { ...window.result, update: { state: 'failed', message: '目标版本未确认，更新失败' } };
+            }
+            return window.result;
+        } };
+    });
+    await page.addScriptTag({ content: react });
+    await page.addScriptTag({ content: script });
+    await page.evaluate(() => window.mountUpdate());
+    await page.getByTestId('agy-core-update-apply').click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    expect(await page.evaluate(() => window.applyCalls.length)).toBe(0);
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    expect(await page.evaluate(() => window.applyCalls.length)).toBe(0);
+    await page.getByTestId('agy-core-update-apply').click();
+    await page.getByTestId('agy-core-update-confirm').click();
+    expect(await page.evaluate(() => window.applyCalls)).toEqual([{ version: '2.35.1', confirmed: true }]);
+    await expect(page.getByTestId('agy-core-update-progress')).toContainText('更新失败');
+});

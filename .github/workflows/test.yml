@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: 语法检查
-        run: python -m py_compile agy_accounts.py tests/test_agy_accounts.py
+        run: python -m py_compile agy_accounts.py core_update_worker.py tests/test_agy_accounts.py
       - name: 冒烟测试
         run: python -m unittest discover -s tests -v
 
@@ -56,4 +56,4 @@ jobs:
       - name: 安装 shellcheck
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
       - name: 检查脚本
-        run: shellcheck -S warning install.sh uninstall.sh install-i18n.sh
+        run: shellcheck -S warning install.sh uninstall.sh install-i18n.sh install-core-update.sh

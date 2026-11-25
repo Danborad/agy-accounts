@@ -90,6 +90,8 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
                                 accountScript = '', accountClient }) {
   let cachedUi;
   let buildingUi;
+  let releaseCache;
+  let releaseChecking;
   const authorized = req => {
     const actual = Buffer.from(req.headers['x-agy-powertools-bridge'] || '');
     const expected = Buffer.from(secret);
@@ -123,6 +125,11 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
       case 'coreUpdate.check':
         if (!accountClient) throw Error('核心更新后端未接入');
         return accountClient(request.method === 'coreUpdate.check' ? 'core_update_check' : 'core_update_status');
+      case 'coreUpdate.apply':
+        if (!accountClient || request.confirmed !== true || !/^\d+\.\d+\.\d+$/.test(request.version || '')) {
+          throw Error('核心更新需要确认并指定已检查的版本');
+        }
+        return accountClient('core_update_apply', { version: request.version, confirmed: true });
       case 'serverAccounts.list':
       case 'serverAccounts.refresh':
         if (!accountClient) throw Error('账号后端未接入');
@@ -179,7 +186,16 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
       case 'update.status':
         return accountClient ? accountClient('plugin_update_status') : { status: 'idle', managedBy: 'web-adapter' };
       case 'update.check': {
-        const result = await plugin.updates.checkForUpdates({ currentVersion: plugin.version });
+        let result = releaseCache?.at > Date.now() - 300000 ? releaseCache.value : null;
+        if (!result) {
+          if (!releaseChecking) {
+            releaseChecking = plugin.updates.checkForUpdates({ currentVersion: plugin.version });
+          }
+          try {
+            result = await releaseChecking;
+            if (['available', 'current'].includes(result.status)) releaseCache = { at: Date.now(), value: result };
+          } finally { releaseChecking = null; }
+        }
         const capability = accountClient ? await accountClient('plugin_update_status') : {};
         return { ...result, canInstall: result.canInstall && capability.canUpdate === true, asset: undefined };
       }
