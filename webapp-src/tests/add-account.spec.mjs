@@ -139,3 +139,64 @@ test('网页桥接把新增账号命令映射到服务端导入接口', async ({
     expect(JSON.parse(byPath('/api/accounts/import-file').body)).toEqual({ filename: 'accounts.json', data: 'e30=' });
     expect(result.oauthError).toContain('不托管 Google 授权');
 });
+
+test('扫描结果全部为重复账号时显示成功提示，失败来源使用友好文案', async ({ page }) => {
+    await mount(page);
+    await page.evaluate(() => {
+        const original = window.__TAURI_INTERNALS__.invoke;
+        window.__TAURI_INTERNALS__.invoke = async (cmd, args) => {
+            if (cmd === 'import_local_accounts_report') {
+                return { accounts: [], sources: [{ source: '当前 Antigravity 登录', status: 'duplicate' }] };
+            }
+            if (cmd === 'import_accounts_file') {
+                return {
+                    imported: 0, failed: 1, duplicate: 0, accounts: [],
+                    sources: [{ source: 'broken.json', status: 'failed', message: '令牌已失效' }],
+                };
+            }
+            return original(cmd, args);
+        };
+    });
+    await page.getByTestId('agy-add-tab-oauth').click();
+    await page.getByTestId('agy-add-scan').click();
+    const status = page.getByRole('dialog').getByRole('status');
+    await expect(status).toContainText(/已经保存过了|already saved/);
+
+    await page.getByTestId('agy-add-tab-import').click();
+    await page.locator('input[type=file][accept*="vscdb"]').setInputFiles({
+        name: 'broken.json', mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify({ accounts: [{ refresh_token: '1//expired-refresh-token' }] })),
+    });
+    const alert = page.getByRole('dialog').getByRole('alert');
+    await expect(alert).toContainText(/导入失败|Import failed/);
+    await expect(alert).not.toContainText('status_failed');
+});
+
+test('核心更新轮询容忍瞬时网络错误，恢复后仍能确认结果', async ({ page }) => {
+    let polls = 0;
+    await page.route('http://localhost:4173/shim-update-test', route => route.fulfill({
+        contentType: 'text/html', body: '<div id="root"></div>',
+    }));
+    await page.route('http://localhost:4173/api/**', route => {
+        const url = new URL(route.request().url());
+        if (url.pathname === '/api/status') return route.fulfill({ json: { ok: true } });
+        if (url.pathname === '/api/update' && route.request().method() === 'POST') {
+            return route.fulfill({ json: { ok: true, jobId: 'job-1' } });
+        }
+        if (url.pathname === '/api/update' && route.request().method() === 'GET') {
+            polls += 1;
+            if (polls === 1) return route.abort('failed');
+            return route.fulfill({
+                json: { ok: true, running: '2.35.2', latest: '2.35.2', available: false,
+                    update: { id: 'job-1', state: 'success', message: '已更新并重启：2.35.2' } },
+            });
+        }
+        return route.fulfill({ json: { ok: true } });
+    });
+    await page.goto('http://localhost:4173/shim-update-test');
+    await page.addScriptTag({ content: shim });
+    const result = await page.evaluate(() => window.__TAURI_INTERNALS__.invoke('apply_update', {}));
+    expect(polls).toBe(2);
+    expect(result.running).toBe('2.35.2');
+    expect(result.message).toContain('2.35.2');
+});

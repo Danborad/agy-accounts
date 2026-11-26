@@ -20,17 +20,13 @@ done
 
 [[ "${EUID}" -eq 0 ]] || { echo "请用 root 运行" >&2; exit 1; }
 
-if systemctl list-unit-files | grep -q '^agy-i18n-proxy.service'; then
-  systemctl disable --now agy-i18n-proxy 2>/dev/null || true
-fi
-rm -f /etc/systemd/system/agy-i18n-proxy.service
-rm -rf /etc/agy-i18n
-systemctl daemon-reload
-
-if systemctl list-unit-files | grep -q "^${UNIT_NAME}.service"; then
-  systemctl disable --now "${UNIT_NAME}" 2>/dev/null || true
-fi
-rm -f "/etc/systemd/system/${UNIT_NAME}.service"
+for unit in agy-i18n-proxy agy-powertools-web agy-powertools-update agy-core-update "${UNIT_NAME}"; do
+  if systemctl list-unit-files | grep -q "^${unit}\.service"; then
+    systemctl disable --now "${unit}" 2>/dev/null || true
+  fi
+  rm -f "/etc/systemd/system/${unit}.service"
+done
+rm -rf /etc/agy-i18n /etc/agy-powertools
 systemctl daemon-reload
 rm -rf "${PREFIX}"
 echo "已停止并删除面板程序 ${PREFIX}"

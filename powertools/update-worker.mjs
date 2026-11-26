@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, readdirSync, lstatSync, mkdtempSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, readdirSync, lstatSync, mkdtempSync, unlinkSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -20,6 +20,15 @@ export async function runPluginUpdate({ currentDir, root, version, release, veri
     const stat = lstatSync(path);
     if (stat.isSymbolicLink()) throw Error('插件目录含符号链接，取消更新');
     if (stat.isDirectory()) for (const name of readdirSync(path)) assertPlainTree(join(path, name));
+  }
+  function pruneOldBackups(dir, keep = 3) {
+    try {
+      const jobs = readdirSync(dir)
+        .filter(name => name.startsWith('job-'))
+        .map(name => ({ path: join(dir, name), mtime: lstatSync(join(dir, name)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      for (const stale of jobs.slice(keep)) rmSync(stale.path, { recursive: true, force: true });
+    } catch { /* Backup cleanup is best-effort. */ }
   }
   try {
     if (release.status !== 'available' || release.version !== version || !release.canInstall || !release.asset) throw Error('版本信息已变化，请重新检查更新');
@@ -58,6 +67,7 @@ export async function runPluginUpdate({ currentDir, root, version, release, veri
     await restart();
     await verify(currentDir, join(verification, 'installed'));
     setState({ status: 'completed', version, backup, message: '插件已更新，请刷新网页加载新版' });
+    pruneOldBackups(backups);
     return { version, backup };
   } catch (error) {
     if (moved) {
@@ -75,6 +85,8 @@ export async function runPluginUpdate({ currentDir, root, version, release, veri
       setState({ status: 'failed', version, message: `未修改现有插件：${error.message}` });
     }
     throw error;
+  } finally {
+    rmSync(verification, { recursive: true, force: true });
   }
 }
 
@@ -134,8 +146,10 @@ if (process.argv[1]?.endsWith('/update-worker.mjs')) {
     process.exitCode = 1;
   } finally {
     if (maintenanceLock && existsSync(maintenanceLock)) {
-      const owner = JSON.parse(readFileSync(maintenanceLock));
-      if (owner.pid === process.pid) unlinkSync(maintenanceLock);
+      try {
+        const owner = JSON.parse(readFileSync(maintenanceLock));
+        if (owner.pid === process.pid) unlinkSync(maintenanceLock);
+      } catch { /* Never mask the original update error. */ }
     }
   }
 }

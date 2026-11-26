@@ -2,7 +2,7 @@
 (() => {
   if (window !== window.top || window.__agyPowertoolsWeb) return;
   const endpoint = '/__agy-powertools/';
-  const assetVersion = '6';
+  const assetVersion = '7';
   window.__agyPowertoolsWeb = { transport: 'same-origin' };
   window.__agyPowertoolsWeb.rpc = async (method, payload = {}) => {
     const response = await fetch(`${endpoint}rpc`, {
@@ -131,7 +131,16 @@
       page.parentElement.after(note);
     }
   };
-  const observer = new MutationObserver(updateControls);
+  let controlsScheduled = false;
+  const scheduleControls = () => {
+    if (controlsScheduled) return;
+    controlsScheduled = true;
+    requestAnimationFrame(() => {
+      controlsScheduled = false;
+      updateControls();
+    });
+  };
+  const observer = new MutationObserver(scheduleControls);
   observer.observe(document.documentElement, { childList: true, subtree: true });
 
   let loaded = false;
@@ -163,23 +172,45 @@
   load();
   setTimeout(() => clearInterval(timer), 30000);
   // Resume monitoring after a tab refresh or a temporary bridge restart.
+  const activeUpdateStatuses = new Set(['preparing', 'downloading', 'verifying', 'installing']);
   let updatePending = false;
+  let monitorTimer = null;
+  const scheduleMonitor = active => {
+    if (monitorTimer) clearTimeout(monitorTimer);
+    monitorTimer = setTimeout(monitor, active ? 3000 : 30000);
+  };
   const monitor = async () => {
+    const tracked = Boolean(sessionStorage.getItem('agy-plugin-web-update-version') || window.__agyPowertoolsWeb.updateInstalling);
+    if (document.visibilityState === 'hidden' && !tracked) {
+      scheduleMonitor(false);
+      return;
+    }
     if (updatePending) return;
     updatePending = true;
+    let active = tracked;
     try {
       const result = await window.__agyPowertoolsWeb.rpc('update.status');
-      if (['preparing', 'downloading', 'verifying', 'installing'].includes(result.status)) {
+      if (activeUpdateStatuses.has(result.status)) {
         sessionStorage.setItem('agy-plugin-web-update-version', result.version);
+        active = true;
       } else if (result.status === 'completed' && sessionStorage.getItem('agy-plugin-web-update-version') === result.version) {
         sessionStorage.removeItem('agy-plugin-web-update-version');
         location.reload();
+        return;
       } else if (['failed', 'rolled-back'].includes(result.status)) {
         sessionStorage.removeItem('agy-plugin-web-update-version');
+        active = false;
+      } else {
+        active = false;
       }
     } catch { /* Retry when the bridge is back online. */ }
-    finally { updatePending = false; }
+    finally {
+      updatePending = false;
+      scheduleMonitor(active);
+    }
   };
-  setInterval(monitor, 3000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void monitor();
+  });
   void monitor();
 })();

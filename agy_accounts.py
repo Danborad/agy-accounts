@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.10.6"
+VERSION = "1.10.7"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -1025,7 +1025,7 @@ class QuotaManager:
             except OSError as exc:
                 log.warning("同步线上令牌失败：%s", exc.__class__.__name__)
 
-    def _refresh_and_write(self, raw: bytes, path: str) -> bytes:
+    def _refresh_token_bytes(self, raw: bytes) -> bytes:
         details = token_details(raw)
         if not details["refresh"]:
             raise QuotaError("令牌已过期且没有 refresh_token，请重新登录该账号")
@@ -1061,12 +1061,15 @@ class QuotaManager:
                 mail = extract_email(str(data["id_token"]).encode("utf-8"))
                 if mail:
                     obj["id_token_email"] = mail
-            refreshed = encode_token_obj(obj)
-            write_atomic(path, refreshed, 0o600)
             self._remember_client(client_id, secret)
-            self._sync_live(raw, refreshed)
-            return refreshed
+            return encode_token_obj(obj)
         raise QuotaError(last_error or "找不到可用的 OAuth 客户端，无法刷新额度")
+
+    def _refresh_and_write(self, raw: bytes, path: str) -> bytes:
+        refreshed = self._refresh_token_bytes(raw)
+        write_atomic(path, refreshed, 0o600)
+        self._sync_live(raw, refreshed)
+        return refreshed
 
     # -- 查询 ------------------------------------------------------------
 
@@ -1114,8 +1117,12 @@ class QuotaManager:
             log.exception("额度查询出现未预期错误 id=%s", account_id)
             return {"status": "error", "error": "查询失败：%s" % exc.__class__.__name__}
 
+    def verify_refresh_token(self, raw: bytes) -> bytes:
+        """只向 Google 校验并刷新令牌，不写盘，供导入流程在操作锁外验证。"""
+        return self._refresh_token_bytes(raw)
+
     def refresh_snapshot(self, raw: bytes, path: str) -> bytes:
-        """用快照中的 refresh_token 换取新令牌并写回，供网页导入时验证登录。"""
+        """用快照中的 refresh_token 换取新令牌并写回。"""
         return self._refresh_and_write(raw, path)
 
     def get_all(self, force: bool = False, cache_only: bool = False) -> Dict[str, Any]:
@@ -1320,9 +1327,39 @@ def _display_name_for(cfg: Dict[str, Any], name: str, email: str) -> str:
     return candidate
 
 
+def _write_verified_refresh_account(cfg: Dict[str, Any], refresh: str, refreshed: bytes,
+                                    name: str = "", email: str = "") -> Dict[str, Any]:
+    existing = _find_account_by_refresh(cfg, refresh)
+    if existing:
+        return {"id": existing["id"], "name": existing["name"],
+                "email": existing["email"], "created": False, "duplicate": True}
+
+    mail = email.strip() if isinstance(email, str) else ""
+    if not EMAIL_RE.match(mail):
+        mail = extract_email(refreshed)
+    display = _display_name_for(cfg, name, mail)
+    ensure_dir(cfg["accounts_dir"], 0o700)
+    account_id = _unique_id(cfg, display)
+    path = os.path.join(cfg["accounts_dir"], account_id)
+    ensure_dir(path, 0o700)
+    stamp = now()
+    meta = {"id": account_id, "name": display, "email": mail,
+            "created_at": stamp, "last_used_at": stamp}
+    try:
+        write_atomic(account_token_path(path), refreshed, 0o600)
+        write_json_atomic(account_meta_path(path), meta, 0o600)
+    except Exception:
+        shutil.rmtree(path, ignore_errors=True)
+        raise
+    log.info("已导入账号 id=%s", account_id)
+    return {"id": account_id, "name": display, "email": mail,
+            "created": True, "duplicate": False}
+
+
 def add_account_from_refresh(cfg: Dict[str, Any], quota: "QuotaManager", refresh_token: Any,
-                             name: str = "", email: str = "") -> Dict[str, Any]:
-    """网页导入：验证 refresh_token 后保存一份可直接切换的令牌快照。"""
+                             name: str = "", email: str = "",
+                             operation_lock: Optional["ServiceOperationLock"] = None) -> Dict[str, Any]:
+    """网页导入：在锁外向 Google 验证 refresh_token，再短时持锁写入快照。"""
     if not isinstance(refresh_token, str):
         raise ApiError(400, "Refresh Token 格式无效")
     refresh = refresh_token.strip()
@@ -1333,33 +1370,16 @@ def add_account_from_refresh(cfg: Dict[str, Any], quota: "QuotaManager", refresh
         return {"id": existing["id"], "name": existing["name"],
                 "email": existing["email"], "created": False, "duplicate": True}
 
-    display = _display_name_for(cfg, name, email)
-    ensure_dir(cfg["accounts_dir"], 0o700)
-    account_id = _unique_id(cfg, display)
-    path = os.path.join(cfg["accounts_dir"], account_id)
-    ensure_dir(path, 0o700)
     raw = encode_token_obj({"token": {"refresh_token": refresh}})
-    token_path = account_token_path(path)
-    write_atomic(token_path, raw, 0o600)
     try:
-        refreshed = quota.refresh_snapshot(raw, token_path)
+        refreshed = quota.verify_refresh_token(raw)
     except QuotaError as exc:
-        shutil.rmtree(path, ignore_errors=True)
         raise ApiError(400, "无法验证该登录令牌：%s" % exc.message)
-    except Exception:
-        shutil.rmtree(path, ignore_errors=True)
-        raise
 
-    mail = email.strip() if isinstance(email, str) else ""
-    if not EMAIL_RE.match(mail):
-        mail = extract_email(refreshed) or extract_email(raw)
-    stamp = now()
-    meta = {"id": account_id, "name": display, "email": mail,
-            "created_at": stamp, "last_used_at": stamp}
-    write_json_atomic(account_meta_path(path), meta, 0o600)
-    log.info("已导入账号 id=%s", account_id)
-    return {"id": account_id, "name": display, "email": mail,
-            "created": True, "duplicate": False}
+    if operation_lock is not None:
+        with operation_lock.hold("导入账号"):
+            return _write_verified_refresh_account(cfg, refresh, refreshed, name=name, email=email)
+    return _write_verified_refresh_account(cfg, refresh, refreshed, name=name, email=email)
 
 
 def _token_records_from_obj(value: Any) -> List[Tuple[str, str, str]]:
@@ -1473,27 +1493,27 @@ def import_token_records(cfg: Dict[str, Any], quota: "QuotaManager",
     accounts: List[Dict[str, Any]] = []
     sources: List[Dict[str, Any]] = []
     counts = {"imported": 0, "duplicate": 0, "failed": 0}
-    with operation_lock.hold("导入账号"):
-        for refresh, mail, name, source in unique[:MAX_IMPORT_TOKENS]:
-            status, message = "imported", ""
-            try:
-                result = add_account_from_refresh(cfg, quota, refresh, name=name, email=mail)
-                if result["duplicate"]:
-                    status = "duplicate"
-                else:
-                    counts["imported"] += 1
-                    accounts.append({"id": result["id"], "name": result["name"],
-                                     "email": result["email"]})
-            except ApiError as exc:
-                status, message = "failed", exc.message
-            if status == "duplicate":
-                counts["duplicate"] += 1
-            elif status == "failed":
-                counts["failed"] += 1
-            entry = {"source": source or "账号文件", "status": status}
-            if message:
-                entry["message"] = message
-            sources.append(entry)
+    for refresh, mail, name, source in unique[:MAX_IMPORT_TOKENS]:
+        status, message = "imported", ""
+        try:
+            result = add_account_from_refresh(cfg, quota, refresh, name=name, email=mail,
+                                              operation_lock=operation_lock)
+            if result["duplicate"]:
+                status = "duplicate"
+            else:
+                counts["imported"] += 1
+                accounts.append({"id": result["id"], "name": result["name"],
+                                 "email": result["email"]})
+        except ApiError as exc:
+            status, message = "failed", exc.message
+        if status == "duplicate":
+            counts["duplicate"] += 1
+        elif status == "failed":
+            counts["failed"] += 1
+        entry = {"source": source or "账号文件", "status": status}
+        if message:
+            entry["message"] = message
+        sources.append(entry)
     result = dict(counts, accounts=accounts, sources=sources)
     if len(unique) > MAX_IMPORT_TOKENS:
         result["truncated"] = len(unique) - MAX_IMPORT_TOKENS
@@ -2880,9 +2900,9 @@ class PanelHandler(BaseHTTPRequestHandler):
                 refresh = body.get("refreshToken") or body.get("refresh_token")
                 name = body.get("name") if isinstance(body.get("name"), str) else ""
                 email = body.get("email") if isinstance(body.get("email"), str) else ""
-                with self.app.operation_lock.hold("导入账号"):
-                    result = add_account_from_refresh(self.app.cfg, self.app.quota, refresh,
-                                                      name=name, email=email)
+                result = add_account_from_refresh(self.app.cfg, self.app.quota, refresh,
+                                                  name=name, email=email,
+                                                  operation_lock=self.app.operation_lock)
                 message = ("该登录已保存为「%s」" % result["name"] if result["duplicate"]
                            else "已导入账号「%s」" % result["name"])
                 account = {"id": result["id"], "name": result["name"], "email": result["email"]}
@@ -2906,7 +2926,10 @@ class PanelHandler(BaseHTTPRequestHandler):
                     try:
                         with os.fdopen(handle, "wb") as stream:
                             stream.write(data)
-                        records = token_records_from_db(temp_path)
+                        try:
+                            records = token_records_from_db(temp_path)
+                        except (sqlite3.Error, OSError):
+                            raise ApiError(400, "数据库文件已损坏或无法读取，请确认选择了完整的 state.vscdb")
                     finally:
                         try:
                             os.unlink(temp_path)
@@ -2940,8 +2963,14 @@ class PanelHandler(BaseHTTPRequestHandler):
                     return
                 if action == "rename":
                     body = self._read_body()
+                    raw_name = body.get("name")
+                    if raw_name == "":
+                        _path, _token, meta = read_target_token(self.app.cfg, account_id)
+                        target = str(meta.get("email") or account_id).strip()
+                    else:
+                        target = raw_name
                     with self.app.operation_lock.hold("重命名账号快照"):
-                        result = rename_account(self.app.cfg, account_id, body.get("name", ""))
+                        result = rename_account(self.app.cfg, account_id, target)
                     self._json(200, {"ok": True, "account": result})
                     return
                 if action == "delete":
@@ -3058,7 +3087,14 @@ class App:
 
     def core_update_job(self) -> Dict[str, Any]:
         stored = read_json(os.path.join(self.core_update_root(), "state.json"))
-        return {key: stored[key] for key in ("id", "state", "message", "version", "at") if key in stored}
+        job = {key: stored[key] for key in ("id", "state", "message", "version", "at") if key in stored}
+        # 面板异常重启且超过更新超时阈值后，避免陈旧的“进行中”状态永久锁死后续更新。
+        if (job.get("state") in ("pending", "downloading", "restarting", "verifying")
+                and not self._core_update_lock.locked()
+                and isinstance(job.get("at"), int) and now() - job["at"] > 600):
+            job["state"] = "failed"
+            job["message"] = "上次核心更新状态已超时未确认，请先核对当前版本"
+        return job
 
     def start_core_update(self, version: str) -> Dict[str, Any]:
         if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
@@ -3093,10 +3129,13 @@ class App:
             try:
                 proc = subprocess.run(["systemctl", "start", "agy-core-update"], timeout=510, capture_output=True)
                 state = self.core_update_job()
-                if state.get("state") not in ("success", "failed"):
+                if state.get("id") != job_id or state.get("state") not in ("success", "failed"):
                     raise ApiError(502, "核心更新服务未正常结束，无法确认更新结果")
                 if proc.returncode != 0 and state.get("state") == "success":
                     raise ApiError(502, "核心更新服务异常退出，请核对当前版本")
+                if state.get("state") == "success":
+                    with self._pw_update_state_lock:
+                        self._pw_update.update(state="success", latest=version, checked_at=now(), error="")
             except Exception:
                 log.exception("独立核心更新服务失败")
                 write_json_atomic(os.path.join(root, "state.json"), {

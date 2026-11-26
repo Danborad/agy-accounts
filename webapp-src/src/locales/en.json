@@ -276,6 +276,7 @@
         "failure_hint": "Check login state, database locations and the system proxy for failed sources. Sign in again if credentials have expired.",
         "status_imported": "Imported",
         "status_duplicate": "Duplicate account",
+        "status_failed": "Import failed",
         "status_unavailable": "Unreadable or signed out",
         "status_missing_credentials": "Missing credentials",
         "status_validation_failed": "Credential validation failed (network or expired login)"

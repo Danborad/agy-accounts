@@ -424,8 +424,14 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
             await fetchAccounts();
             setImportSources(report.sources);
             const failed = report.sources.filter(source => !['imported', 'duplicate'].includes(source.status)).length;
-            setStatus(report.accounts.length ? 'success' : 'error');
-            setMessage(t('accounts.add.import.summary', { success: report.accounts.length, failed }));
+            const duplicates = report.sources.filter(source => source.status === 'duplicate').length;
+            if (report.accounts.length === 0 && failed === 0 && duplicates > 0) {
+                setStatus('success');
+                setMessage(t('accounts.add.import.duplicate_only', '这些账号已经保存过了，无需重复导入。'));
+            } else {
+                setStatus(report.accounts.length ? 'success' : 'error');
+                setMessage(t('accounts.add.import.summary', { success: report.accounts.length, failed }));
+            }
         } catch (error) { setStatus('error'); setMessage(String(error)); }
     };
 
@@ -551,10 +557,7 @@ function AddAccountDialog({ onAdd, showText = true }: AddAccountDialogProps) {
         <>
             <button
                 className="px-2.5 lg:px-4 py-2 bg-white dark:bg-base-100 text-gray-700 dark:text-gray-300 text-sm font-medium rounded-lg hover:bg-gray-50 dark:hover:bg-base-200 transition-colors flex items-center gap-2 shadow-sm border border-gray-200/50 dark:border-base-300"
-                onClick={() => {
-                    console.log('AddAccountDialog button clicked');
-                    setIsOpen(true);
-                }}
+                onClick={() => setIsOpen(true)}
                 title={!showText ? t('accounts.add_account') : undefined}
                 data-testid="agy-add-account-trigger"
             >

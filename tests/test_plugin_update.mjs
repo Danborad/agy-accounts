@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -66,5 +66,6 @@ for (const fail of ['before', 'after', 'none']) {
       assert.equal(state.at(-1).status, fail === 'after' ? 'rolled-back' : 'failed');
       assert.equal(restarted, fail === 'after' ? 2 : 0);
     }
+    assert.deepEqual(readdirSync(root).filter(name => name.startsWith('verification-')), []);
   });
 }

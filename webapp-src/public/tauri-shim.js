@@ -615,9 +615,8 @@
         return null;
       }
       case "update_account_label": {
-        if (!args.label) return null;
         await api("/api/accounts/" + encodeURIComponent(args.accountId) + "/rename", {
-          method: "POST", body: JSON.stringify({ name: args.label })
+          method: "POST", body: JSON.stringify({ name: args.label || "" })
         });
         cache.at = 0;
         return null;
@@ -767,9 +766,19 @@
         });
         if (!update.jobId) return update;
         var deadline = Date.now() + 600000;
+        var pollErrors = 0;
         while (Date.now() < deadline) {
           await new Promise(function (resolve) { setTimeout(resolve, 2000); });
-          var state = await api("/api/update");
+          var state;
+          try {
+            state = await api("/api/update");
+            pollErrors = 0;
+          } catch (error) {
+            if (error && error.status === 401) throw error;
+            pollErrors += 1;
+            if (pollErrors >= 10) throw new Error("核心更新仍在后台执行，但暂时无法连接面板，请刷新核对当前版本。");
+            continue;
+          }
           if (state.update && state.update.id === update.jobId) {
             if (state.update.state === "success") return Object.assign({}, state, { message: state.update.message });
             if (state.update.state === "failed") throw new Error(state.update.message);

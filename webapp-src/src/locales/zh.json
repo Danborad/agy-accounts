@@ -276,6 +276,7 @@
         "failure_hint": "失败来源请检查登录状态、数据库路径及系统代理；失效凭据需重新登录。",
         "status_imported": "已导入",
         "status_duplicate": "重复账号",
+        "status_failed": "导入失败",
         "status_unavailable": "无法读取或未登录",
         "status_missing_credentials": "缺少登录凭据",
         "status_validation_failed": "凭据验证失败（网络或登录已失效）"

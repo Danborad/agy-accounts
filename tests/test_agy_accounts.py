@@ -951,8 +951,8 @@ class PanelTest(unittest.TestCase):
     def test_web_import_token_saves_verified_snapshot_and_duplicate(self):
         self.login()
         refresh = "1//refresh-token-for-web-import"
-        with mock.patch.object(self.app.quota, "refresh_snapshot",
-                               side_effect=lambda raw, path: self.refreshed(raw, "web@example.com")):
+        with mock.patch.object(self.app.quota, "verify_refresh_token",
+                               side_effect=lambda raw: self.refreshed(raw, "web@example.com")):
             status, data, _ = self.request("POST", "/api/accounts/import-token", {
                 "refreshToken": refresh, "name": "网页导入",
             })
@@ -971,6 +971,16 @@ class PanelTest(unittest.TestCase):
         with open(os.path.join(self.accounts_dir, data["account"]["id"], "token"), "rb") as fh:
             self.assertEqual(agy_accounts.refresh_token_of(fh.read()), refresh)
 
+        # 未提供名称时应回填验证后拿到的邮箱，而不是落成“账号”。
+        with mock.patch.object(self.app.quota, "verify_refresh_token",
+                               side_effect=lambda raw: self.refreshed(raw, "bare@example.com")):
+            status, bare, _ = self.request("POST", "/api/accounts/import-token", {
+                "refreshToken": "1//bare-refresh-token-value",
+            })
+        self.assertEqual(status, 200, bare)
+        self.assertEqual(bare["account"]["email"], "bare@example.com")
+        self.assertEqual(bare["account"]["name"], "bare@example.com")
+
         status, data, _ = self.request("POST", "/api/accounts/import-token", {
             "refreshToken": "not-a-refresh-token",
         })
@@ -979,7 +989,7 @@ class PanelTest(unittest.TestCase):
 
     def test_web_import_token_rolls_back_when_google_rejects(self):
         self.login()
-        with mock.patch.object(self.app.quota, "refresh_snapshot",
+        with mock.patch.object(self.app.quota, "verify_refresh_token",
                                side_effect=agy_accounts.QuotaError("该账号的登录已失效")):
             status, data, _ = self.request("POST", "/api/accounts/import-token", {
                 "refreshToken": "1//expired-refresh-token",
@@ -995,8 +1005,8 @@ class PanelTest(unittest.TestCase):
             "refresh_token": "1//json-export-refresh-token",
         }]}
         encoded = base64.b64encode(json.dumps(export).encode("utf-8")).decode("ascii")
-        with mock.patch.object(self.app.quota, "refresh_snapshot",
-                               side_effect=lambda raw, path: self.refreshed(raw, "export@example.com")):
+        with mock.patch.object(self.app.quota, "verify_refresh_token",
+                               side_effect=lambda raw: self.refreshed(raw, "export@example.com")):
             status, data, _ = self.request("POST", "/api/accounts/import-file", {
                 "filename": "agy-export.json", "data": encoded,
             })
@@ -1017,8 +1027,8 @@ class PanelTest(unittest.TestCase):
             connection.close()
         with open(database, "rb") as fh:
             encoded = base64.b64encode(fh.read()).decode("ascii")
-        with mock.patch.object(self.app.quota, "refresh_snapshot",
-                               side_effect=lambda raw, path: self.refreshed(raw, "db@example.com")):
+        with mock.patch.object(self.app.quota, "verify_refresh_token",
+                               side_effect=lambda raw: self.refreshed(raw, "db@example.com")):
             status, data, _ = self.request("POST", "/api/accounts/import-file", {
                 "filename": "state.vscdb", "data": encoded,
             })
@@ -1027,7 +1037,7 @@ class PanelTest(unittest.TestCase):
         ids = {account["email"] for account in self.app.status_payload()["accounts"]}
         self.assertEqual(ids, {"export@example.com", "db@example.com"})
 
-    def test_web_import_file_rejects_unknown_content(self):
+    def test_web_import_file_rejects_unknown_and_corrupted_vscdb(self):
         self.login()
         encoded = base64.b64encode(b"nothing useful here").decode("ascii")
         status, data, _ = self.request("POST", "/api/accounts/import-file", {
@@ -1036,14 +1046,21 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("没有找到", data["error"])
 
+        corrupt = base64.b64encode(b"SQLite format 3\x00truncated").decode("ascii")
+        status, data, _ = self.request("POST", "/api/accounts/import-file", {
+            "filename": "broken.vscdb", "data": corrupt,
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("损坏", data["error"])
+
     def test_web_scan_imports_current_antigravity_login_once(self):
         self.login()
         self.write_token(json.dumps({
             "token": {"refresh_token": "1//current-live-refresh-token",
                       "email": "live@example.com"},
         }))
-        with mock.patch.object(self.app.quota, "refresh_snapshot",
-                               side_effect=lambda raw, path: self.refreshed(raw, "live@example.com")):
+        with mock.patch.object(self.app.quota, "verify_refresh_token",
+                               side_effect=lambda raw: self.refreshed(raw, "live@example.com")):
             status, data, _ = self.request("POST", "/api/accounts/scan", {})
             self.assertEqual(status, 200, data)
             self.assertEqual(data["imported"], 1)
@@ -1053,6 +1070,45 @@ class PanelTest(unittest.TestCase):
         self.assertEqual(data["imported"], 0)
         self.assertEqual(data["duplicate"], 1)
         self.assertFalse(data["failed"])
+
+    def test_import_validation_does_not_hold_operation_lock_during_network_call(self):
+        self.login()
+        checked = []
+
+        def verify(raw):
+            with self.app.operation_lock.hold("并发检查"):
+                checked.append(True)
+            return self.refreshed(raw, "nolock@example.com")
+
+        with mock.patch.object(self.app.quota, "verify_refresh_token", side_effect=verify):
+            status, data, _ = self.request("POST", "/api/accounts/import-token", {
+                "refreshToken": "1//nolock-refresh-token",
+            })
+        self.assertEqual(status, 200, data)
+        self.assertEqual(checked, [True])
+
+    def test_rename_empty_clears_alias_and_falls_back_to_email(self):
+        self.login()
+        self.write_token(json.dumps({"access_token": "aaa", "email": "clear@example.com"}))
+        self.assertEqual(self.save("自定义备注")[0], 200)
+        account_id = self.account_id("自定义备注")
+        status, data, _ = self.request("POST", "/api/accounts/%s/rename" %
+                                       urllib.parse.quote(account_id, safe=""),
+                                       {"name": ""})
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["account"]["name"], "clear@example.com")
+
+    def test_stale_core_update_state_expires_after_crash(self):
+        root = os.path.join(self.tmp, "core-updates")
+        agy_accounts.ensure_dir(root)
+        agy_accounts.write_json_atomic(os.path.join(root, "state.json"), {
+            "id": "a" * 32, "version": "2.35.1", "state": "restarting",
+            "message": "正在重启", "at": agy_accounts.now() - 900,
+        })
+        with mock.patch.object(self.app, "core_update_root", return_value=root):
+            job = self.app.core_update_job()
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("超时", job["message"])
 
 
 class UsagePerformanceTest(unittest.TestCase):

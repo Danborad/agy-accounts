@@ -154,6 +154,7 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
       case 'settings.get': return current;
       case 'settings.set':
         validateSettings(request.settings);
+        cachedUi = undefined;
         return webSettings(plugin.store.set(request.settings));
       case 'state': {
         if (typeof request.conversationId !== 'string' || !ID.test(request.conversationId)) throw Error('会话标识无效');
