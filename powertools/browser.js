@@ -2,7 +2,7 @@
 (() => {
   if (window !== window.top || window.__agyPowertoolsWeb) return;
   const endpoint = '/__agy-powertools/';
-  const assetVersion = '7';
+  const assetVersion = '8';
   window.__agyPowertoolsWeb = { transport: 'same-origin' };
   window.__agyPowertoolsWeb.rpc = async (method, payload = {}) => {
     const response = await fetch(`${endpoint}rpc`, {
@@ -79,6 +79,9 @@
     [data-testid="agy-page-tabs"]>button{flex-shrink:0}
     .agy-server-button{cursor:pointer;padding:7px 12px;border:1px solid var(--border);border-radius:8px}
     .agy-server-button:disabled{opacity:.5;cursor:default}
+    .agy-server-switch-pill{flex:none;cursor:pointer;padding:6px 14px;border:1px solid var(--border,#333);border-radius:999px;background:var(--secondary,#222);color:var(--muted-foreground,#9ca3af);font-size:12px;font-weight:600;white-space:nowrap}
+    .agy-server-switch-pill.is-on{border-color:#22c55e;background:#22c55e22;color:#22c55e}
+    .agy-server-switch-pill:disabled{opacity:.5;cursor:default}
     dialog.agy-server-confirm{position:fixed!important;inset:0!important;margin:0!important;width:100%!important;height:100%!important;max-width:none!important;max-height:none!important;border:0;padding:16px;box-sizing:border-box;background:transparent;color:var(--foreground,#eee);overflow:auto;transform:none!important}
     dialog.agy-server-confirm[open]{display:flex!important;align-items:center!important;justify-content:center!important}
     dialog.agy-server-confirm::backdrop{background:#0009}
@@ -126,7 +129,7 @@
     if (page && !document.querySelector('[data-agy-web-notice]')) {
       const note = document.createElement('p');
       note.dataset.agyWebNotice = '';
-      note.textContent = '账号额度与切换已内置在「账号与额度」和设置页；费用仅为 API 参考估算，不是订阅账单。';
+      note.textContent = '账号额度与手动切换在「账号与额度」页；自动切换开关与核心更新在「设置」页；费用仅为 API 参考估算，不是订阅账单。';
       note.style.cssText = 'font-size:12px;line-height:1.6;opacity:.65;margin:12px 0';
       page.parentElement.after(note);
     }

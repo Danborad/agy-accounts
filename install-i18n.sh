@@ -95,7 +95,7 @@ if [[ "${WITH_POWERTOOLS}" != "0" && -d "${HOME}/.gemini/config/plugins/agy-powe
     sleep 1
     if python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${POWERTOOLS_PORT}/healthz', timeout=3)" >/dev/null 2>&1; then
       ok "Powertools 网页桥接已启动（127.0.0.1:${POWERTOOLS_PORT}）"
-      POWERTOOLS_SCRIPT='<script src="/__agy-powertools/bootstrap.js?v=7" defer></script>'
+      POWERTOOLS_SCRIPT='<script src="/__agy-powertools/bootstrap.js?v=8" defer></script>'
     else
       warn "Powertools 网页桥接未就绪，查看 journalctl -u agy-powertools-web；原网页仍可正常使用"
     fi

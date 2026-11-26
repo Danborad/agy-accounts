@@ -148,3 +148,42 @@ for (const mode of ['transformed-container', 'no-portal', 'zoomed-root']) {
         expect(Math.abs(afterScroll.y - box.y)).toBeLessThan(3);
     });
 }
+
+test('设置页服务端自动切换开关可读写并同步状态', async ({ page }) => {
+    await page.route('http://localhost:4173/failover-test', route => route.fulfill({
+        contentType: 'text/html', body: '<div id="root"></div>',
+    }));
+    await page.goto('http://localhost:4173/failover-test');
+    await page.addStyleTag({ content: accountCss });
+    await page.evaluate(() => {
+        window.failoverState = { enabled: true, status: { state: 'ok', message: '当前账号可用', at: 1795700000 } };
+        window.failoverCalls = [];
+        window.__agyPowertoolsWeb = { rpc: async (method, payload) => {
+            if (method === 'serverAccounts.failoverGet') return window.failoverState;
+            if (method === 'serverAccounts.failoverSet') {
+                window.failoverCalls.push(payload);
+                window.failoverState = {
+                    enabled: payload.enabled,
+                    status: { state: payload.enabled ? 'ok' : 'disabled', message: payload.enabled ? '当前账号可用' : '自动切换已关闭', at: 1795700010 },
+                };
+                return window.failoverState;
+            }
+            return {};
+        } };
+    });
+    const mountFailover = buildSync({
+        stdin: { contents: "import React from 'react';import{createRoot}from'react-dom/client';window.React=React;window.mountFailover=()=>createRoot(document.getElementById('root')).render(React.createElement(window.__agyWebFailoverSetting));", resolveDir: process.cwd() },
+        bundle: true, write: false, format: 'iife',
+    }).outputFiles[0].text;
+    await page.addScriptTag({ content: mountFailover });
+    await page.addScriptTag({ content: script });
+    await page.evaluate(() => window.mountFailover());
+    const toggle = page.getByTestId('agy-server-failover-toggle');
+    await expect(toggle).toHaveText('已开启');
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
+    await toggle.click();
+    await expect(toggle).toHaveText('已关闭');
+    await expect(toggle).toHaveAttribute('aria-checked', 'false');
+    await expect(page.getByTestId('agy-server-failover-status')).toContainText('自动切换已关闭');
+    expect(await page.evaluate(() => window.failoverCalls)).toEqual([{ enabled: false }]);
+});

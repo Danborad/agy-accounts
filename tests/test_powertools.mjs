@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { test } from 'node:test';
-import { createBridge, validateSettings, webSettings, localizeStagePrompt, adaptNativeBindings } from '../powertools/server.mjs';
+import { createBridge, validateSettings, webSettings, localizeStagePrompt, adaptNativeBindings, adaptPluginSource } from '../powertools/server.mjs';
 import { createAccountClient } from '../powertools/account-client.mjs';
 
 const secret = 'f'.repeat(64);
@@ -108,6 +108,11 @@ test('桥接认证、Origin 校验和 RPC 白名单', async t => {
     assert.deepEqual(calls.at(-1), { action: 'alias', payload: { accountId: '主账号', alias: '新备注' } });
     assert.equal((await rpc('serverAccounts.alias', { accountId: '主账号', alias: 'x'.repeat(61) })).status, 400);
     assert.equal((await rpc('serverAccounts.alias', { accountId: '../x', alias: 'a' })).status, 400);
+    assert.equal((await rpc('serverAccounts.failoverGet')).status, 200);
+    assert.equal(calls.at(-1).action, 'failover_status');
+    assert.equal((await rpc('serverAccounts.failoverSet', { enabled: 'no' })).status, 400);
+    assert.equal((await rpc('serverAccounts.failoverSet', { enabled: false })).status, 200);
+    assert.deepEqual(calls.at(-1), { action: 'failover_set', payload: { enabled: false } });
     assert.equal((await rpc('state', { conversationId: '../../etc/passwd' })).status, 400);
     assert.equal((await rpc('subagents.stats', { conversationIds: Array(33).fill('id') })).status, 400);
     assert.equal((await (await rpc('update.check')).json()).canInstall, true);
@@ -135,4 +140,21 @@ test('插件成功检查合并并发请求并缓存，避免重复打 GitHub', a
     await Promise.all([rpc(), rpc()]);
     await rpc();
     assert.equal(count, 1);
+});
+
+test('设置页只放自动切换开关与核心更新，不再重复放账号列表', () => {
+    const sample = [
+        'if(location.origin==="https://agy-powertools.invalid"){',
+        'globalThis.__agyInitialSettings={};',
+        "const t1=['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):'额度'];",
+        "const t2=['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):text('额度','Quota')];",
+        "const p1=tab==='quota'?h(Quotas):h(Settings);",
+        "const p2=tab==='quota'?h(Quotas):h(Settings);",
+        '        h(About),',
+    ].join('\n');
+    const out = adaptPluginSource(sample, { compact: true });
+    assert.equal(out.split('__agyWebAccountsPanel').length - 1, 2);
+    assert.ok(!out.includes('__agyWebAccountsPanel),h(globalThis.__agyWebCoreUpdate)'));
+    assert.ok(out.includes('h(globalThis.__agyWebFailoverSetting),h(globalThis.__agyWebCoreUpdate),h(About),'));
+    assert.ok(!out.includes('h(Quotas)'));
 });

@@ -48,10 +48,11 @@ export function adaptPluginSource(source, settings) {
   if (!source.includes(slot) || !source.includes("['quota',opts.multiAccount?") || !source.includes('        h(About),')) {
     throw Error('插件账号页结构不兼容，停止注入');
   }
-  source = source.replace(slot, "tab==='quota'?h(globalThis.__agyWebAccountsPanel)");
-  source = source.replace("['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):'额度']", "['quota','账号与额度']");
+  source = source.replaceAll(slot, "tab==='quota'?h(globalThis.__agyWebAccountsPanel)");
+  source = source.replaceAll("['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):'额度']", "['quota','账号与额度']");
+  source = source.replaceAll("['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):text('额度','Quota')]", "['quota','账号与额度']");
   return source.replace('        h(About),',
-    '        h(globalThis.__agyWebAccountsPanel),h(globalThis.__agyWebCoreUpdate),h(About),');
+    '        h(globalThis.__agyWebFailoverSetting),h(globalThis.__agyWebCoreUpdate),h(About),');
 }
 
 export function managedHub(home, service = 'agy-server') {
@@ -151,6 +152,12 @@ export function createBridge({ plugin, secret, home = homedir(), service = 'agy-
           throw Error('账号备注无效');
         }
         return accountClient('alias', { accountId: request.accountId, alias: request.alias });
+      case 'serverAccounts.failoverGet':
+        if (!accountClient) throw Error('账号后端未接入');
+        return accountClient('failover_status');
+      case 'serverAccounts.failoverSet':
+        if (!accountClient || typeof request.enabled !== 'boolean') throw Error('自动切换开关参数无效');
+        return accountClient('failover_set', { enabled: request.enabled });
       case 'settings.get': return current;
       case 'settings.set':
         validateSettings(request.settings);

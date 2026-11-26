@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 APP_NAME = "agy-accounts"
-VERSION = "1.10.7"
+VERSION = "1.10.8"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEBAPP_DIR = os.path.join(BASE_DIR, "webapp")
@@ -2728,6 +2728,13 @@ class PanelHandler(BaseHTTPRequestHandler):
             if not isinstance(account_id, str) or not isinstance(alias, str) or len(alias) > MAX_NAME:
                 raise ApiError(400, "账号备注无效")
             result = self.app.set_powertools_alias(account_id, alias)
+        elif action == "failover_status":
+            result = self.app.failover_payload()
+        elif action == "failover_set":
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ApiError(400, "enabled 必须是布尔值")
+            result = self.app.set_failover(enabled)
         else:
             raise ApiError(400, "不支持此账号操作")
         self._json(200, dict(result, ok=True))
@@ -2787,11 +2794,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/failover":
                 self._require_auth()
-                self._json(200, {
-                    "ok": True,
-                    "enabled": bool(self.app.cfg.get("auto_failover", True)),
-                    "status": self.app.failover.state(),
-                })
+                self._json(200, dict(self.app.failover_payload(), ok=True))
                 return
             if path == "/api/update":
                 self._require_auth()
@@ -2852,13 +2855,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 enabled = body.get("enabled")
                 if not isinstance(enabled, bool):
                     raise ApiError(400, "enabled 必须是布尔值")
-                update_config(self.app.cfg, auto_failover=enabled)
-                log.info("账号自动切换已%s", "启用" if enabled else "关闭")
-                self._json(200, {
-                    "ok": True,
-                    "enabled": enabled,
-                    "status": self.app.failover.state(),
-                })
+                self._json(200, dict(self.app.set_failover(enabled), ok=True))
                 return
             if path == "/api/update":
                 body = self._read_body()
@@ -3311,6 +3308,19 @@ class App:
 
         threading.Thread(target=switch, daemon=True).start()
         return {"jobId": job_id}
+
+    def failover_payload(self) -> Dict[str, Any]:
+        return {
+            "enabled": bool(self.cfg.get("auto_failover", True)),
+            "status": self.failover.state(),
+        }
+
+    def set_failover(self, enabled: bool) -> Dict[str, Any]:
+        update_config(self.cfg, auto_failover=enabled)
+        if not enabled:
+            self.failover._set("disabled", "自动切换已关闭")
+        log.info("账号自动切换已%s", "启用" if enabled else "关闭")
+        return self.failover_payload()
 
     def set_powertools_alias(self, account_id: str, alias: str) -> Dict[str, Any]:
         account_id = safe_account_id(account_id)

@@ -35,7 +35,7 @@ export async function verifyPlugin(pluginDir, dataDir) {
           const body = JSON.parse(req.postData());
           if (body.method === 'quota.observe') return route.fulfill({ json: { estimates: [] } });
           if (body.method === 'update.status') return route.fulfill({ json: { status: 'idle' } });
-          if (!['settings.get', 'dashboard', 'state', 'subagents.stats', 'serverAccounts.list', 'coreUpdate.status', 'proxy.status'].includes(body.method)) {
+          if (!['settings.get', 'dashboard', 'state', 'subagents.stats', 'serverAccounts.list', 'serverAccounts.failoverGet', 'coreUpdate.status', 'proxy.status'].includes(body.method)) {
             return route.fulfill({ status: 403, json: { error: '更新验证只允许只读操作' } });
           }
         }
@@ -75,6 +75,7 @@ export async function verifyPlugin(pluginDir, dataDir) {
       await page.keyboard.press('Escape');
     }
     await page.getByTestId('agy-tab-settings').click();
+    await page.getByTestId('agy-server-failover').waitFor({ state: 'visible' });
     await page.getByTestId('agy-core-update').waitFor({ state: 'visible' });
     await page.getByTestId('agy-about-version').filter({ hasText: plugin.version }).waitFor();
     await context.unrouteAll({ behavior: 'ignoreErrors' });

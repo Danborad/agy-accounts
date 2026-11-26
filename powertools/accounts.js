@@ -202,4 +202,45 @@
             { 'data-testid': 'agy-server-alias-save' })),
       ));
   };
+  window.__agyWebFailoverSetting = function FailoverSetting() {
+    const R = window.React;
+    const h = R.createElement;
+    const [info, setInfo] = R.useState(null);
+    const [saving, setSaving] = R.useState(false);
+    const [error, setError] = R.useState('');
+    R.useEffect(() => {
+      let live = true;
+      window.__agyPowertoolsWeb.rpc('serverAccounts.failoverGet')
+        .then(next => { if (live) { setInfo(next); setError(''); } })
+        .catch(failure => { if (live) setError(failure.message); });
+      return () => { live = false; };
+    }, []);
+    const toggle = async () => {
+      if (!info || saving) return;
+      const next = !info.enabled;
+      setSaving(true);
+      setError('');
+      try {
+        setInfo(await window.__agyPowertoolsWeb.rpc('serverAccounts.failoverSet', { enabled: next }));
+      } catch (failure) { setError(failure.message); }
+      finally { setSaving(false); }
+    };
+    const enabled = Boolean(info?.enabled);
+    const statusText = info?.status?.message || (enabled ? '每 90 秒检查一次当前账号' : '自动切换已关闭');
+    const updatedAt = info?.status?.at ? new Date(info.status.at * 1000).toLocaleTimeString([], { hour12: false }) : '';
+    return h('section', { className: 'pt-card pt-stack', style: { padding: 16 }, 'data-testid': 'agy-server-failover' },
+      h('div', { className: 'pt-row' },
+        h('div', null,
+          h('h3', null, '账号失效自动切换（服务端）'),
+          h('p', { className: 'pt-muted', style: { marginTop: 4 } },
+            '当 Google 明确判定当前账号不可用或需要验证时，服务端自动尝试切换到其它已保存账号（不会因额度耗尽切号）。与 8790 面板共用同一开关；如果多端 SSH 共享同一令牌文件，另一端登录或切号也会覆盖当前账号。')),
+        h('button', {
+          type: 'button', role: 'switch', 'aria-checked': enabled, 'aria-label': '账号失效自动切换',
+          className: `agy-server-switch-pill${enabled ? ' is-on' : ''}`,
+          disabled: !info || saving, onClick: toggle, 'data-testid': 'agy-server-failover-toggle',
+        }, !info ? '读取中…' : saving ? '保存中…' : enabled ? '已开启' : '已关闭')),
+      h('p', { role: 'status', className: 'pt-muted', 'data-testid': 'agy-server-failover-status' },
+        updatedAt ? `${statusText} · ${updatedAt}` : statusText),
+      error && h('p', { role: 'alert', className: 'pt-alert' }, error));
+  };
 })();
