@@ -142,10 +142,13 @@ test('插件成功检查合并并发请求并缓存，避免重复打 GitHub', a
     assert.equal(count, 1);
 });
 
-test('设置页只放自动切换开关与核心更新，不再重复放账号列表', () => {
+test('设置页只放自动切换开关与核心更新，不再重复放账号列表（兼容 2.16 与 2.17 多分支 About）', () => {
     const sample = [
         'if(location.origin==="https://agy-powertools.invalid"){',
         'globalThis.__agyInitialSettings={};',
+        'if(!options.enabled){return h("div",null,',
+        '          h(About),',
+        ');}',
         "const t1=['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):'额度'];",
         "const t2=['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):text('额度','Quota')];",
         "const p1=tab==='quota'?h(Quotas):h(Settings);",
@@ -154,7 +157,7 @@ test('设置页只放自动切换开关与核心更新，不再重复放账号�
     ].join('\n');
     const out = adaptPluginSource(sample, { compact: true });
     assert.equal(out.split('__agyWebAccountsPanel').length - 1, 2);
+    assert.equal(out.split('h(globalThis.__agyWebFailoverSetting),h(globalThis.__agyWebCoreUpdate),h(About),').length - 1, 2);
     assert.ok(!out.includes('__agyWebAccountsPanel),h(globalThis.__agyWebCoreUpdate)'));
-    assert.ok(out.includes('h(globalThis.__agyWebFailoverSetting),h(globalThis.__agyWebCoreUpdate),h(About),'));
     assert.ok(!out.includes('h(Quotas)'));
 });

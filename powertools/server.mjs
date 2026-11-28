@@ -45,14 +45,16 @@ export function adaptPluginSource(source, settings) {
     `globalThis.__agyInitialSettings=${JSON.stringify(webSettings(settings))};`);
   source = adaptNativeBindings(localizeStagePrompt(source));
   const slot = "tab==='quota'?h(Quotas)";
-  if (!source.includes(slot) || !source.includes("['quota',opts.multiAccount?") || !source.includes('        h(About),')) {
+  const aboutSlot = /^([ \t]*)h\(About\),$/gm;
+  if (!source.includes(slot) || !source.includes("['quota',opts.multiAccount?") || !aboutSlot.test(source)) {
     throw Error('插件账号页结构不兼容，停止注入');
   }
+  aboutSlot.lastIndex = 0;
   source = source.replaceAll(slot, "tab==='quota'?h(globalThis.__agyWebAccountsPanel)");
   source = source.replaceAll("['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):'额度']", "['quota','账号与额度']");
   source = source.replaceAll("['quota',opts.multiAccount?text('账号与额度','Accounts & Quota'):text('额度','Quota')]", "['quota','账号与额度']");
-  return source.replace('        h(About),',
-    '        h(globalThis.__agyWebFailoverSetting),h(globalThis.__agyWebCoreUpdate),h(About),');
+  return source.replace(aboutSlot,
+    '$1h(globalThis.__agyWebFailoverSetting),h(globalThis.__agyWebCoreUpdate),h(About),');
 }
 
 export function managedHub(home, service = 'agy-server') {

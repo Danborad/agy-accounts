@@ -2,7 +2,7 @@
 (() => {
   if (window !== window.top || window.__agyPowertoolsWeb) return;
   const endpoint = '/__agy-powertools/';
-  const assetVersion = '8';
+  const assetVersion = '9';
   window.__agyPowertoolsWeb = { transport: 'same-origin' };
   window.__agyPowertoolsWeb.rpc = async (method, payload = {}) => {
     const response = await fetch(`${endpoint}rpc`, {
@@ -48,7 +48,10 @@
   // Desktop-only controls must not suggest that server credentials or proxies can be changed.
   const restricted = ['multiAccount', 'autoSwitchAccount', 'proxyEnabled', 'fileContextMenu'];
   const style = document.createElement('style');
-  style.textContent = restricted.map(key => `[data-testid="agy-setting-row-${key}"] { opacity: .55; }`).join('\n');
+  style.textContent = [
+    ...restricted.map(key => `[data-testid="agy-setting-row-${key}"] { opacity: .55; }`),
+    '[data-testid="agy-settings-cat-accounts"] { display: none !important; }',
+  ].join('\n');
   document.head.append(style);
   const accountStyle = document.createElement('style');
   accountStyle.textContent = `
